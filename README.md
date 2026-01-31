@@ -1,2 +1,2 @@
 # dodi
-Dodi - Your personal AI companion. Didactical Doing.
+Dodi - Your personal AI companion. Didactic Doing!
