@@ -1,0 +1,25 @@
+# DODI - Didactic Doing Robot Companion
+# Python 3.11+ required
+
+# Hardware Interface (ReSpeaker HAT)
+RPi.GPIO>=0.7.0
+gpiozero>=2.0
+spidev>=3.6
+
+# Audio I/O
+pyaudio>=0.2.14
+sounddevice>=0.4.6
+numpy>=1.24.0
+
+# Local AI Models
+vosk>=0.3.45
+piper-tts>=1.2.0
+
+# Cloud AI Providers
+google-generativeai>=0.5.0
+openai>=1.30.0
+httpx>=0.27.0
+
+# Configuration & Utilities
+python-dotenv>=1.0.0
+pydantic>=2.0.0

@@ -1,0 +1,49 @@
+{
+  "language": {
+    "code": "de",
+    "auto_detect": false
+  },
+  "persona": {
+    "active": "default",
+    "directory": "personas/"
+  },
+  "ai_provider": {
+    "active": "gemini",
+    "gemini": {
+      "model": "gemini-2.0-flash",
+      "temperature": 0.7,
+      "max_tokens": 512
+    },
+    "openai": {
+      "model": "gpt-4o-mini",
+      "temperature": 0.7,
+      "max_tokens": 512
+    },
+    "grok": {
+      "model": "grok-2",
+      "temperature": 0.7,
+      "max_tokens": 512
+    }
+  },
+  "local_models": {
+    "stt": {
+      "engine": "vosk",
+      "model_path": "models/stt/vosk-model-small-de-0.15"
+    },
+    "tts": {
+      "engine": "piper",
+      "model_path": "models/tts/en_US-lessac-medium.onnx",
+      "voice": "en_US-lessac-medium"
+    }
+  },
+  "audio": {
+    "volume": 80,
+    "input_device": "seeed-2mic-voicecard",
+    "sample_rate": 16000
+  },
+  "wake_word": {
+    "enabled": true,
+    "phrases": ["dod", "tode", "okay dod", "du die", "rudi", "hallo dod"]
+  },
+  "stop_words": ["stop", "be quiet", "shut up", "enough"]
+}
