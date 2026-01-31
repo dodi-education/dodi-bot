@@ -4,7 +4,7 @@
     "auto_detect": false
   },
   "persona": {
-    "active": "default",
+    "active": "default_de",
     "directory": "personas/"
   },
   "ai_provider": {
@@ -32,8 +32,8 @@
     },
     "tts": {
       "engine": "piper",
-      "model_path": "models/tts/en_US-lessac-medium.onnx",
-      "voice": "en_US-lessac-medium"
+      "model_path": "models/tts/de_DE-thorsten-medium.onnx",
+      "voice": "de_DE-thorsten-medium"
     }
   },
   "audio": {
@@ -45,5 +45,5 @@
     "enabled": true,
     "phrases": ["dod", "tode", "okay dod", "du die", "rudi", "hallo dod"]
   },
-  "stop_words": ["stop", "be quiet", "shut up", "enough"]
+  "stop_words": ["stop", "stopp", "be quiet", "shut up", "enough"]
 }

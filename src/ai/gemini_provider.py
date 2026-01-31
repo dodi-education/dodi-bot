@@ -13,30 +13,21 @@ class GeminiProvider(AIProviderBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._genai = None
-        self._model = None
+        self._client = None
 
     def _initialize_client(self) -> None:
         """Initialize the Gemini client."""
         try:
-            import google.generativeai as genai
+            from google import genai
 
-            genai.configure(api_key=self.api_key)
-            self._genai = genai
-            self._model = genai.GenerativeModel(
-                model_name=self.model,
-                generation_config={
-                    "temperature": self.temperature,
-                    "max_output_tokens": self.max_tokens,
-                },
-            )
+            self._client = genai.Client(api_key=self.api_key)
             logger.info(f"Gemini client initialized with model: {self.model}")
         except ImportError:
-            raise ImportError("google-generativeai package not installed")
+            raise ImportError("google-genai package not installed. Install with: pip install google-genai")
 
     def chat(self, message: str, system_prompt: Optional[str] = None) -> str:
         """Send a message to Gemini and get a response."""
-        if self._model is None:
+        if self._client is None:
             self._initialize_client()
 
         try:
@@ -45,7 +36,14 @@ class GeminiProvider(AIProviderBase):
             if system_prompt:
                 full_prompt = f"{system_prompt}\n\nUser: {message}"
 
-            response = self._model.generate_content(full_prompt)
+            response = self._client.models.generate_content(
+                model=self.model,
+                contents=full_prompt,
+                config={
+                    "temperature": self.temperature,
+                    "max_output_tokens": self.max_tokens,
+                },
+            )
             return response.text
 
         except Exception as e:
@@ -55,10 +53,13 @@ class GeminiProvider(AIProviderBase):
     def validate_connection(self) -> bool:
         """Test connection to Gemini API."""
         try:
-            if self._model is None:
+            if self._client is None:
                 self._initialize_client()
             # Simple test request
-            response = self._model.generate_content("Say 'ok'")
+            response = self._client.models.generate_content(
+                model=self.model,
+                contents="Say 'ok'",
+            )
             return bool(response.text)
         except Exception as e:
             logger.error(f"Gemini connection validation failed: {e}")
