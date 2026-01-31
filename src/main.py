@@ -169,17 +169,32 @@ class DODI:
 
     def speak(self, text: str) -> bool:
         """
-        Speak text using TTS. Can be interrupted.
+        Speak text using TTS, listening for stop words to interrupt.
 
         Returns:
-            True if completed, False if interrupted
+            True if completed, False if interrupted by stop word
         """
-        logger.info(f"Speaking: {text}")
         tts = self._init_tts()
-        audio_output = self._init_audio_output()
+        stt = self._init_stt()
+        audio_input = self._init_audio_input()
 
-        audio_data, sample_rate = tts.synthesize(text)
-        return audio_output.play(audio_data, sample_rate)
+        # Start speaking in background
+        piper_proc, aplay_proc = tts.speak_async(text)
+
+        # Listen for stop words while speaking
+        stt.reset()
+        while tts.is_speaking(aplay_proc):
+            audio_data = audio_input.read(timeout=0.1)
+            if audio_data:
+                result = stt.process_audio(audio_data)
+                if result and self.contains_stop_word(result):
+                    logger.info(f"Stop word detected: {result}")
+                    tts.stop_speaking(piper_proc, aplay_proc)
+                    return False  # Interrupted
+
+        # Check final exit codes
+        piper_proc.wait()
+        return aplay_proc.returncode == 0
 
     def listen_for_command(self, timeout: float = 5.0) -> str:
         """

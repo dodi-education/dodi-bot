@@ -32,10 +32,18 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 # Model URLs
 VOSK_MODEL_URL="https://alphacephei.com/vosk/models/vosk-model-small-de-0.15.zip"
 VOSK_MODEL_NAME="vosk-model-small-de-0.15"
+# Piper binary (standalone, includes phonemizer - works on ARM64)
+PIPER_BINARY_URL="https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz"
+PIPER_BINARY_NAME="piper"
 # Piper voices are hosted on Hugging Face
-PIPER_VOICE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx"
-PIPER_VOICE_JSON_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json"
-PIPER_VOICE_NAME="en_US-lessac-medium"
+# English voice
+PIPER_VOICE_EN_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx"
+PIPER_VOICE_EN_JSON_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json"
+PIPER_VOICE_EN_NAME="en_US-lessac-medium"
+# German voice (Thorsten Medium - natural sounding)
+PIPER_VOICE_DE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx"
+PIPER_VOICE_DE_JSON_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx.json"
+PIPER_VOICE_DE_NAME="de_DE-thorsten-medium"
 
 # Default values
 PROVIDER=""
@@ -290,6 +298,8 @@ PACKAGES=(
     "wget"
     "unzip"
     "dkms"
+    "espeak-ng"
+    "libespeak-ng-dev"
 )
 
 # Kernel headers (needed for seeed-voicecard driver compilation)
@@ -609,7 +619,7 @@ echo -e "${BLUE}[5/7] Installing Python dependencies...${NC}"
 
 # Check if key packages are already installed to skip slow pip install
 # These are the slowest/most important packages from requirements.txt
-KEY_PACKAGES=("vosk" "pyaudio" "piper" "google.generativeai")
+KEY_PACKAGES=("vosk" "pyaudio" "piper" "google.genai")
 PACKAGES_MISSING=false
 
 for pkg in "${KEY_PACKAGES[@]}"; do
@@ -694,44 +704,106 @@ else
         fi
     fi
 
-    # Download Piper TTS voice (model + config from Hugging Face)
-    TTS_MODEL_DIR="$PROJECT_DIR/models/tts"
-    if [ -f "$TTS_MODEL_DIR/$PIPER_VOICE_NAME.onnx" ] && [ -f "$TTS_MODEL_DIR/$PIPER_VOICE_NAME.onnx.json" ]; then
-        echo -e "  ${GREEN}[+]${NC} Piper TTS voice already downloaded"
+    # Download Piper binary (standalone, includes phonemizer for ARM64)
+    PIPER_INSTALL_DIR="/usr/local/bin"
+    PIPER_LIB_DIR="/usr/local/lib/piper"
+    if [ -f "$PIPER_INSTALL_DIR/piper" ] && [ -d "$PIPER_LIB_DIR" ]; then
+        echo -e "  ${GREEN}[+]${NC} Piper binary already installed"
     else
-        cd "$TTS_MODEL_DIR"
-        PIPER_OK=true
+        cd "$PROJECT_DIR/models"
+        if download_with_progress "$PIPER_BINARY_URL" "piper.tar.gz" "Piper binary (~30MB)"; then
+            echo -ne "  [~] Installing piper binary... "
+            if tar -xzf piper.tar.gz 2>/dev/null; then
+                # Install binary to /usr/local/bin
+                cp piper/piper "$PIPER_INSTALL_DIR/"
+                chmod +x "$PIPER_INSTALL_DIR/piper"
 
-        # Download the ONNX model file
-        if [ ! -f "$PIPER_VOICE_NAME.onnx" ]; then
-            if ! download_with_progress "$PIPER_VOICE_URL" "$PIPER_VOICE_NAME.onnx" "Piper TTS model (~65MB)"; then
-                PIPER_OK=false
+                # Install shared libraries to dedicated directory
+                mkdir -p "$PIPER_LIB_DIR"
+                cp piper/lib*.so* "$PIPER_LIB_DIR/" 2>/dev/null || cp piper/*.so* "$PIPER_LIB_DIR/" 2>/dev/null || true
+
+                # Copy espeak-ng data that piper needs
+                mkdir -p /usr/local/share/piper
+                cp -r piper/espeak-ng-data /usr/local/share/piper/ 2>/dev/null || true
+
+                # Add piper lib directory to ldconfig
+                echo "$PIPER_LIB_DIR" > /etc/ld.so.conf.d/piper.conf
+                ldconfig
+
+                rm -rf piper piper.tar.gz
+                echo -e "${GREEN}done${NC}"
+                echo -e "  ${GREEN}[+]${NC} Piper binary installed to $PIPER_INSTALL_DIR/piper"
+            else
+                echo -e "${RED}failed${NC}"
+                rm -f piper.tar.gz
             fi
         fi
+    fi
 
-        # Download the config JSON file
-        if [ ! -f "$PIPER_VOICE_NAME.onnx.json" ]; then
-            if ! download_with_progress "$PIPER_VOICE_JSON_URL" "$PIPER_VOICE_NAME.onnx.json" "Piper TTS config"; then
-                PIPER_OK=false
+    # Download Piper TTS voices (model + config from Hugging Face)
+    TTS_MODEL_DIR="$PROJECT_DIR/models/tts"
+    cd "$TTS_MODEL_DIR"
+
+    # Download English voice
+    if [ -f "$TTS_MODEL_DIR/$PIPER_VOICE_EN_NAME.onnx" ] && [ -f "$TTS_MODEL_DIR/$PIPER_VOICE_EN_NAME.onnx.json" ]; then
+        echo -e "  ${GREEN}[+]${NC} Piper English voice already downloaded"
+    else
+        PIPER_EN_OK=true
+        if [ ! -f "$PIPER_VOICE_EN_NAME.onnx" ]; then
+            if ! download_with_progress "$PIPER_VOICE_EN_URL" "$PIPER_VOICE_EN_NAME.onnx" "Piper English voice (~65MB)"; then
+                PIPER_EN_OK=false
             fi
         fi
-
-        if [ "$PIPER_OK" = true ]; then
-            echo -e "  ${GREEN}[+]${NC} Piper TTS voice installed"
+        if [ ! -f "$PIPER_VOICE_EN_NAME.onnx.json" ]; then
+            if ! download_with_progress "$PIPER_VOICE_EN_JSON_URL" "$PIPER_VOICE_EN_NAME.onnx.json" "Piper English config"; then
+                PIPER_EN_OK=false
+            fi
+        fi
+        if [ "$PIPER_EN_OK" = true ]; then
+            echo -e "  ${GREEN}[+]${NC} Piper English voice installed"
         else
-            echo -e "  ${RED}[!]${NC} Piper TTS voice download failed"
+            echo -e "  ${RED}[!]${NC} Piper English voice download failed"
+        fi
+    fi
+
+    # Download German voice (Thorsten High)
+    if [ -f "$TTS_MODEL_DIR/$PIPER_VOICE_DE_NAME.onnx" ] && [ -f "$TTS_MODEL_DIR/$PIPER_VOICE_DE_NAME.onnx.json" ]; then
+        echo -e "  ${GREEN}[+]${NC} Piper German voice already downloaded"
+    else
+        PIPER_DE_OK=true
+        if [ ! -f "$PIPER_VOICE_DE_NAME.onnx" ]; then
+            if ! download_with_progress "$PIPER_VOICE_DE_URL" "$PIPER_VOICE_DE_NAME.onnx" "Piper German voice (~100MB)"; then
+                PIPER_DE_OK=false
+            fi
+        fi
+        if [ ! -f "$PIPER_VOICE_DE_NAME.onnx.json" ]; then
+            if ! download_with_progress "$PIPER_VOICE_DE_JSON_URL" "$PIPER_VOICE_DE_NAME.onnx.json" "Piper German config"; then
+                PIPER_DE_OK=false
+            fi
+        fi
+        if [ "$PIPER_DE_OK" = true ]; then
+            echo -e "  ${GREEN}[+]${NC} Piper German voice installed"
+        else
+            echo -e "  ${RED}[!]${NC} Piper German voice download failed"
         fi
     fi
 
     cd "$PROJECT_DIR"
 
-    # Verify models were downloaded
-    if [ -d "$PROJECT_DIR/models/stt/$VOSK_MODEL_NAME" ] && [ -f "$PROJECT_DIR/models/tts/$PIPER_VOICE_NAME.onnx" ]; then
-        echo -e "${GREEN}[OK]${NC} Local AI models ready"
-    elif [ -d "$PROJECT_DIR/models/stt/$VOSK_MODEL_NAME" ] || [ -f "$PROJECT_DIR/models/tts/$PIPER_VOICE_NAME.onnx" ]; then
-        echo -e "${YELLOW}[!]${NC} Some models failed to download (check errors above)"
+    # Verify models and binary were downloaded
+    MODELS_OK=true
+    [ ! -d "$PROJECT_DIR/models/stt/$VOSK_MODEL_NAME" ] && MODELS_OK=false
+    [ ! -f "$PROJECT_DIR/models/tts/$PIPER_VOICE_EN_NAME.onnx" ] && MODELS_OK=false
+    [ ! -f "$PROJECT_DIR/models/tts/$PIPER_VOICE_DE_NAME.onnx" ] && MODELS_OK=false
+    [ ! -f "/usr/local/bin/piper" ] && MODELS_OK=false
+    [ ! -d "/usr/local/lib/piper" ] && MODELS_OK=false
+
+    if [ "$MODELS_OK" = true ]; then
+        echo -e "${GREEN}[OK]${NC} Local AI models and Piper binary ready"
+    elif [ -d "$PROJECT_DIR/models/stt/$VOSK_MODEL_NAME" ] || [ -f "$PROJECT_DIR/models/tts/$PIPER_VOICE_EN_NAME.onnx" ] || [ -f "/usr/local/bin/piper" ]; then
+        echo -e "${YELLOW}[!]${NC} Some components failed to download (check errors above)"
     else
-        echo -e "${RED}[!]${NC} Failed to download models"
+        echo -e "${RED}[!]${NC} Failed to download models and Piper binary"
     fi
 fi
 echo ""
@@ -867,7 +939,7 @@ declare -A PY_PACKAGES=(
     ["vosk"]="Speech recognition"
     ["pyaudio"]="Audio I/O"
     ["piper-tts"]="Text-to-speech"
-    ["google-generativeai"]="Gemini API"
+    ["google-genai"]="Gemini API"
     ["openai"]="OpenAI API"
     ["python-dotenv"]="Config loading"
 )
@@ -892,7 +964,9 @@ echo "  --------------------------------  ------   --------"
 
 if [ "$SKIP_MODELS" = true ]; then
     print_status "Vosk STT model" "warn" "Skipped (--skip-models)"
-    print_status "Piper TTS voice" "warn" "Skipped (--skip-models)"
+    print_status "Piper binary" "warn" "Skipped (--skip-models)"
+    print_status "Piper English voice" "warn" "Skipped (--skip-models)"
+    print_status "Piper German voice" "warn" "Skipped (--skip-models)"
 else
     # Check STT model
     if [ -d "$PROJECT_DIR/models/stt/$VOSK_MODEL_NAME" ]; then
@@ -902,12 +976,28 @@ else
         print_status "Vosk STT model" "fail" "Not downloaded"
     fi
 
-    # Check TTS model
-    if [ -f "$PROJECT_DIR/models/tts/$PIPER_VOICE_NAME.onnx" ]; then
-        model_size=$(du -sh "$PROJECT_DIR/models/tts/$PIPER_VOICE_NAME.onnx" 2>/dev/null | cut -f1)
-        print_status "Piper TTS voice" "ok" "$PIPER_VOICE_NAME ($model_size)"
+    # Check Piper binary
+    if [ -f "/usr/local/bin/piper" ]; then
+        piper_ver=$(/usr/local/bin/piper --version 2>&1 | head -1 || echo "installed")
+        print_status "Piper binary" "ok" "$piper_ver"
     else
-        print_status "Piper TTS voice" "fail" "Not downloaded"
+        print_status "Piper binary" "fail" "Not installed"
+    fi
+
+    # Check English TTS voice
+    if [ -f "$PROJECT_DIR/models/tts/$PIPER_VOICE_EN_NAME.onnx" ]; then
+        model_size=$(du -sh "$PROJECT_DIR/models/tts/$PIPER_VOICE_EN_NAME.onnx" 2>/dev/null | cut -f1)
+        print_status "Piper English voice" "ok" "$PIPER_VOICE_EN_NAME ($model_size)"
+    else
+        print_status "Piper English voice" "fail" "Not downloaded"
+    fi
+
+    # Check German TTS voice
+    if [ -f "$PROJECT_DIR/models/tts/$PIPER_VOICE_DE_NAME.onnx" ]; then
+        model_size=$(du -sh "$PROJECT_DIR/models/tts/$PIPER_VOICE_DE_NAME.onnx" 2>/dev/null | cut -f1)
+        print_status "Piper German voice" "ok" "$PIPER_VOICE_DE_NAME ($model_size)"
+    else
+        print_status "Piper German voice" "fail" "Not downloaded"
     fi
 fi
 
