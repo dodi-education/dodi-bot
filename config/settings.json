@@ -34,7 +34,7 @@
   },
   "streaming": {
     "enabled": true,
-    "active": "openai",
+    "active": "grok",
     "openai": {
       "model": "gpt-realtime",
       "voice": "alloy"
