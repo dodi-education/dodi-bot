@@ -1,7 +1,7 @@
 """Abstract base class for AI providers."""
 
 from abc import ABC, abstractmethod
-from typing import Iterator, Optional
+from typing import Iterator, List, Optional
 
 
 class AIProviderBase(ABC):
@@ -40,6 +40,42 @@ class AIProviderBase(ABC):
 
         Args:
             message: User message text
+            system_prompt: Optional system prompt (persona)
+
+        Yields:
+            Response text chunks as they are generated
+        """
+        pass
+
+    @abstractmethod
+    def chat_with_history(
+        self,
+        messages: List[dict],
+        system_prompt: Optional[str] = None
+    ) -> str:
+        """
+        Send a conversation with history and get a response.
+
+        Args:
+            messages: List of {"role": "user"|"assistant", "content": str}
+            system_prompt: Optional system prompt (persona)
+
+        Returns:
+            Response text from the AI
+        """
+        pass
+
+    @abstractmethod
+    def chat_stream_with_history(
+        self,
+        messages: List[dict],
+        system_prompt: Optional[str] = None
+    ) -> Iterator[str]:
+        """
+        Stream a response given conversation history.
+
+        Args:
+            messages: List of {"role": "user"|"assistant", "content": str}
             system_prompt: Optional system prompt (persona)
 
         Yields:

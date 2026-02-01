@@ -106,6 +106,19 @@ class VoiceStreamingProvider(ABC):
         """Interrupt the current response (barge-in)."""
         pass
 
+    @abstractmethod
+    async def send_text_prompt(self, text: str) -> None:
+        """
+        Send a text prompt to trigger AI response without audio input.
+
+        This enables proactive speech from the AI (e.g., greetings)
+        without requiring the user to speak first.
+
+        Args:
+            text: The text prompt to send to the AI
+        """
+        pass
+
     @property
     def is_connected(self) -> bool:
         """Check if currently connected to the API."""
