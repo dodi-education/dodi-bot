@@ -3,6 +3,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Callable
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,9 @@ class VoiceStreamingProvider(ABC):
         self.voice = voice
         self.sample_rate = sample_rate
         self._connected = False
+        self._is_speaking = False
+        self._speaking_ended_at: Optional[float] = None
+        self._echo_cooldown_seconds = 0.5
 
     @abstractmethod
     async def connect(self, system_prompt: Optional[str] = None) -> None:
@@ -106,6 +110,30 @@ class VoiceStreamingProvider(ABC):
     def is_connected(self) -> bool:
         """Check if currently connected to the API."""
         return self._connected
+
+    @property
+    def is_speaking(self) -> bool:
+        """
+        Check if AI is currently speaking (outputting audio).
+
+        Returns True if actively speaking, or within the cooldown period
+        after speech ended (to handle echo tail from speakers).
+        """
+        if self._is_speaking:
+            return True
+        if self._speaking_ended_at is not None:
+            if time.time() - self._speaking_ended_at < self._echo_cooldown_seconds:
+                return True
+        return False
+
+    def _set_speaking(self, speaking: bool) -> None:
+        """Update speaking state (for subclass use)."""
+        if speaking:
+            self._is_speaking = True
+            self._speaking_ended_at = None
+        else:
+            self._is_speaking = False
+            self._speaking_ended_at = time.time()
 
     def get_provider_name(self) -> str:
         """Return the provider name for logging."""

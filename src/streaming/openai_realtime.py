@@ -199,6 +199,10 @@ class OpenAIRealtimeProvider(VoiceStreamingProvider):
         self._transcript_callback = on_transcript
         self._end_callback = on_end
 
+        # Reset speaking state
+        self._is_speaking = False
+        self._speaking_ended_at = None
+
         if not self._connected:
             await self.connect(system_prompt)
 
@@ -239,7 +243,8 @@ class OpenAIRealtimeProvider(VoiceStreamingProvider):
             logger.info(f"WS message: {msg_type}")
 
         if msg_type == "response.audio.delta":
-            # Audio chunk received
+            # Audio chunk received - AI is speaking
+            self._set_speaking(True)
             audio_b64 = msg.get("delta", "")
             if audio_b64:
                 logger.info(f"Audio delta: {len(audio_b64)} chars")
@@ -261,7 +266,8 @@ class OpenAIRealtimeProvider(VoiceStreamingProvider):
                 self._transcript_callback(text)
 
         elif msg_type == "response.done":
-            # Response complete - log details
+            # Response complete - AI finished speaking
+            self._set_speaking(False)
             response = msg.get("response", {})
             status = response.get("status", "unknown")
             output = response.get("output", [])
@@ -309,6 +315,10 @@ class OpenAIRealtimeProvider(VoiceStreamingProvider):
 
     async def interrupt(self) -> None:
         """Interrupt the current response."""
+        # Clear speaking state
+        self._is_speaking = False
+        self._speaking_ended_at = None
+
         if not self._connected or not self._ws:
             return
 

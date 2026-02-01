@@ -154,6 +154,10 @@ class GeminiLiveProvider(VoiceStreamingProvider):
         self._transcript_callback = on_transcript
         self._end_callback = on_end
 
+        # Reset speaking state
+        self._is_speaking = False
+        self._speaking_ended_at = None
+
         if not self._connected:
             await self.connect(system_prompt)
 
@@ -195,14 +199,17 @@ class GeminiLiveProvider(VoiceStreamingProvider):
                     for part in server_content.model_turn.parts:
                         if hasattr(part, 'inline_data') and part.inline_data:
                             audio_data = part.inline_data.data
-                            if audio_data and self._aplay_proc and self._aplay_proc.stdin:
-                                try:
-                                    self._aplay_proc.stdin.write(audio_data)
-                                    self._aplay_proc.stdin.flush()
-                                except BrokenPipeError:
-                                    pass
-                            if audio_data and self._audio_callback:
-                                self._audio_callback(audio_data)
+                            if audio_data:
+                                # AI is speaking
+                                self._set_speaking(True)
+                                if self._aplay_proc and self._aplay_proc.stdin:
+                                    try:
+                                        self._aplay_proc.stdin.write(audio_data)
+                                        self._aplay_proc.stdin.flush()
+                                    except BrokenPipeError:
+                                        pass
+                                if self._audio_callback:
+                                    self._audio_callback(audio_data)
 
                         # Check for text content
                         if hasattr(part, 'text') and part.text:
@@ -211,6 +218,8 @@ class GeminiLiveProvider(VoiceStreamingProvider):
 
                 # Check for turn complete
                 if hasattr(server_content, 'turn_complete') and server_content.turn_complete:
+                    # AI finished speaking
+                    self._set_speaking(False)
                     logger.info("Turn complete")
                     if self._end_callback:
                         self._end_callback()
@@ -224,6 +233,10 @@ class GeminiLiveProvider(VoiceStreamingProvider):
 
     async def interrupt(self) -> None:
         """Interrupt the current response."""
+        # Clear speaking state
+        self._is_speaking = False
+        self._speaking_ended_at = None
+
         # Clear audio output
         if self._aplay_proc:
             self._aplay_proc.terminate()

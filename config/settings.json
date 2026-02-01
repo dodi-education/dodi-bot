@@ -59,7 +59,10 @@
   },
   "wake_word": {
     "enabled": true,
-    "phrases": ["dod", "tode", "okay dod", "du die", "rudi", "hallo dod"]
+    "phrases": ["dod", "der o d", "tode", "okay dod", "du die", "rudi", "hallo dod"]
   },
-  "stop_words": ["stop", "stopp", "be quiet", "shut up", "enough"]
+  "stop_words": {
+    "enabled": false,
+    "words": ["stop", "stopp", "be quiet", "shut up", "enough"]
+  }
 }
