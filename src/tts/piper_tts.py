@@ -4,10 +4,13 @@ import io
 import json
 import logging
 import subprocess
+import threading
 import wave
 from pathlib import Path
 
 import numpy as np
+
+from audio.volume import scale_volume
 
 logger = logging.getLogger(__name__)
 
@@ -22,16 +25,18 @@ class PiperTTS:
     avoiding the piper-phonemize compilation issues on Raspberry Pi.
     """
 
-    def __init__(self, model_path: str, piper_binary: str = None):
+    def __init__(self, model_path: str, piper_binary: str = None, volume: int = 100):
         """
         Initialize Piper TTS.
 
         Args:
             model_path: Path to Piper ONNX model file
             piper_binary: Path to piper binary (auto-detected if not specified)
+            volume: Output volume percentage (0-100)
         """
         self.model_path = Path(model_path)
         self.piper_binary = piper_binary
+        self.volume = volume
         self._initialized = False
         self.sample_rate = 22050  # Default, will be read from model config
 
@@ -116,6 +121,9 @@ class PiperTTS:
         # Convert raw PCM bytes to numpy array
         audio_data = np.frombuffer(result.stdout, dtype=np.int16)
 
+        # Apply volume scaling
+        audio_data = scale_volume(audio_data, self.volume)
+
         return audio_data, self.sample_rate
 
     def speak_async(self, text: str) -> tuple[subprocess.Popen, subprocess.Popen]:
@@ -135,8 +143,7 @@ class PiperTTS:
 
         logger.info(f"Speaking: {text[:50]}..." if len(text) > 50 else f"Speaking: {text}")
 
-        # Pipe piper output directly to aplay
-        # plughw:1,0 handles sample rate conversion automatically
+        # Start piper process
         piper_proc = subprocess.Popen(
             [self.piper_binary, "--model", str(self.model_path), "--output-raw"],
             stdin=subprocess.PIPE,
@@ -144,16 +151,43 @@ class PiperTTS:
             stderr=subprocess.PIPE
         )
 
+        # Start aplay process
         aplay_proc = subprocess.Popen(
             ["aplay", "-D", "plughw:1,0", "-f", "S16_LE", "-r", str(self.sample_rate), "-c", "1"],
-            stdin=piper_proc.stdout,
+            stdin=subprocess.PIPE,
             stderr=subprocess.PIPE
         )
 
         # Send text to piper and close stdin to signal EOF
         piper_proc.stdin.write(text.encode("utf-8"))
         piper_proc.stdin.close()
-        piper_proc.stdout.close()  # Allow aplay to receive SIGPIPE when piper finishes
+
+        # Start background thread to read from piper, apply volume, and write to aplay
+        def volume_pipe():
+            try:
+                while True:
+                    chunk = piper_proc.stdout.read(4096)
+                    if not chunk:
+                        break
+                    # Apply volume scaling
+                    scaled_chunk = scale_volume(chunk, self.volume)
+                    try:
+                        aplay_proc.stdin.write(scaled_chunk)
+                        aplay_proc.stdin.flush()
+                    except (BrokenPipeError, OSError):
+                        break
+            finally:
+                try:
+                    piper_proc.stdout.close()
+                except Exception:
+                    pass
+                try:
+                    aplay_proc.stdin.close()
+                except Exception:
+                    pass
+
+        pipe_thread = threading.Thread(target=volume_pipe, daemon=True)
+        pipe_thread.start()
 
         return piper_proc, aplay_proc
 

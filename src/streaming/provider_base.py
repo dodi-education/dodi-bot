@@ -22,7 +22,8 @@ class VoiceStreamingProvider(ABC):
         api_key: str,
         model: str,
         voice: str,
-        sample_rate: int = 24000
+        sample_rate: int = 24000,
+        volume: int = 100
     ):
         """
         Initialize the voice streaming provider.
@@ -32,11 +33,13 @@ class VoiceStreamingProvider(ABC):
             model: Model identifier
             voice: Voice identifier for TTS
             sample_rate: Audio sample rate in Hz
+            volume: Output volume percentage (0-100)
         """
         self.api_key = api_key
         self.model = model
         self.voice = voice
         self.sample_rate = sample_rate
+        self.volume = volume
         self._connected = False
         self._is_speaking = False
         self._speaking_ended_at: Optional[float] = None
@@ -116,6 +119,16 @@ class VoiceStreamingProvider(ABC):
 
         Args:
             text: The text prompt to send to the AI
+        """
+        pass
+
+    @abstractmethod
+    async def clear_input_buffer(self) -> None:
+        """
+        Clear any buffered audio input on the server side.
+
+        This prevents echo/feedback from being interpreted as user speech.
+        Should be called after AI finishes speaking before listening.
         """
         pass
 

@@ -13,6 +13,7 @@ except ImportError:
     websockets = None
 
 from .provider_base import VoiceStreamingProvider
+from audio.volume import scale_volume
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,8 @@ class OpenAIRealtimeProvider(VoiceStreamingProvider):
         voice: str = "alloy",
         sample_rate: int = 24000,
         base_url: str = None,
-        input_sample_rate: int = None
+        input_sample_rate: int = None,
+        volume: int = 100
     ):
         """
         Initialize OpenAI Realtime provider.
@@ -45,8 +47,9 @@ class OpenAIRealtimeProvider(VoiceStreamingProvider):
             sample_rate: Audio sample rate (24000 for OpenAI Realtime)
             base_url: Optional custom WebSocket URL (for Grok compatibility)
             input_sample_rate: Sample rate of input audio (will resample if different from sample_rate)
+            volume: Output volume percentage (0-100)
         """
-        super().__init__(api_key, model, voice, sample_rate)
+        super().__init__(api_key, model, voice, sample_rate, volume)
         self.base_url = base_url or OPENAI_REALTIME_URL
         self.input_sample_rate = input_sample_rate or sample_rate
         self._ws = None
@@ -238,17 +241,19 @@ class OpenAIRealtimeProvider(VoiceStreamingProvider):
         msg_type = msg.get("type", "")
 
         # Log all message types for debugging
-        if msg_type not in ("response.audio.delta", "input_audio_buffer.speech_started",
-                           "input_audio_buffer.speech_stopped", "input_audio_buffer.committed"):
-            logger.info(f"WS message: {msg_type}")
+        #if msg_type not in ("response.audio.delta", "input_audio_buffer.speech_started",
+        #                   "input_audio_buffer.speech_stopped", "input_audio_buffer.committed"):
+        #    logger.info(f"WS message: {msg_type}")
 
         if msg_type == "response.audio.delta":
             # Audio chunk received - AI is speaking
             self._set_speaking(True)
             audio_b64 = msg.get("delta", "")
             if audio_b64:
-                logger.info(f"Audio delta: {len(audio_b64)} chars")
+                #logger.info(f"Audio delta: {len(audio_b64)} chars")
                 audio_data = base64.b64decode(audio_b64)
+                # Apply volume scaling
+                audio_data = scale_volume(audio_data, self.volume)
                 if self._aplay_proc and self._aplay_proc.stdin:
                     try:
                         self._aplay_proc.stdin.write(audio_data)
@@ -261,7 +266,7 @@ class OpenAIRealtimeProvider(VoiceStreamingProvider):
         elif msg_type == "response.audio_transcript.delta":
             # Transcript chunk received
             text = msg.get("delta", "")
-            logger.info(f"Transcript delta: {text}")
+            #logger.info(f"Transcript delta: {text}")
             if text and self._transcript_callback:
                 self._transcript_callback(text)
 
@@ -301,6 +306,11 @@ class OpenAIRealtimeProvider(VoiceStreamingProvider):
         elif msg_type == "conversation.item.input_audio_transcription.failed":
             error = msg.get("error", {})
             logger.error(f"Transcription failed: {error.get('message', 'Unknown')} - {error}")
+
+        elif msg_type == "input_audio_buffer.cleared":
+            logger.info("Input audio buffer cleared")
+            if hasattr(self, '_buffer_cleared_event') and self._buffer_cleared_event:
+                self._buffer_cleared_event.set()
 
         elif msg_type == "rate_limits.updated":
             pass  # Ignore rate limit updates
@@ -366,3 +376,21 @@ class OpenAIRealtimeProvider(VoiceStreamingProvider):
 
         # Trigger response generation
         await self._ws.send(json.dumps({"type": "response.create"}))
+
+    async def clear_input_buffer(self) -> None:
+        """Clear the server-side audio input buffer and wait for acknowledgment."""
+        if not self._connected or not self._ws:
+            return
+
+        # Set up event to wait for acknowledgment
+        self._buffer_cleared_event = asyncio.Event()
+
+        await self._ws.send(json.dumps({"type": "input_audio_buffer.clear"}))
+        logger.info("Clearing input audio buffer...")
+
+        # Wait for acknowledgment with timeout
+        try:
+            await asyncio.wait_for(self._buffer_cleared_event.wait(), timeout=2.0)
+            logger.info("Input audio buffer cleared (acknowledged)")
+        except asyncio.TimeoutError:
+            logger.warning("Timeout waiting for buffer clear acknowledgment")

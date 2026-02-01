@@ -6,6 +6,7 @@ import subprocess
 from typing import Optional, Callable
 
 from .provider_base import VoiceStreamingProvider
+from audio.volume import scale_volume
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,8 @@ class GeminiLiveProvider(VoiceStreamingProvider):
         api_key: str,
         model: str = "gemini-2.5-flash-native-audio",
         voice: str = "Puck",
-        sample_rate: int = 16000
+        sample_rate: int = 16000,
+        volume: int = 100
     ):
         """
         Initialize Gemini Live provider.
@@ -32,8 +34,9 @@ class GeminiLiveProvider(VoiceStreamingProvider):
             model: Model to use (default: gemini-2.0-flash-live-001)
             voice: Voice for responses (Puck, Charon, Kore, Fenrir, Aoede)
             sample_rate: Audio sample rate (16000 for Gemini)
+            volume: Output volume percentage (0-100)
         """
-        super().__init__(api_key, model, voice, sample_rate)
+        super().__init__(api_key, model, voice, sample_rate, volume)
         self._client = None
         self._session = None
         self._session_context = None
@@ -202,6 +205,8 @@ class GeminiLiveProvider(VoiceStreamingProvider):
                             if audio_data:
                                 # AI is speaking
                                 self._set_speaking(True)
+                                # Apply volume scaling
+                                audio_data = scale_volume(audio_data, self.volume)
                                 if self._aplay_proc and self._aplay_proc.stdin:
                                     try:
                                         self._aplay_proc.stdin.write(audio_data)
@@ -269,3 +274,9 @@ class GeminiLiveProvider(VoiceStreamingProvider):
             )
         except Exception as e:
             logger.error(f"Error sending text prompt: {e}")
+
+    async def clear_input_buffer(self) -> None:
+        """Clear any buffered audio input (no-op for Gemini)."""
+        # Gemini Live API doesn't have a buffer clear mechanism like OpenAI
+        # The local audio queue clearing should be sufficient
+        pass

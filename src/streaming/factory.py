@@ -30,7 +30,8 @@ def create_streaming_provider(
     provider_name: str,
     config: dict,
     api_key: Optional[str] = None,
-    input_sample_rate: int = None
+    input_sample_rate: int = None,
+    volume: int = 100
 ) -> VoiceStreamingProvider:
     """
     Create a voice streaming provider based on configuration.
@@ -40,6 +41,7 @@ def create_streaming_provider(
         config: Provider-specific configuration dict
         api_key: Optional API key (if not provided, reads from environment)
         input_sample_rate: Sample rate of input audio from microphone
+        volume: Output volume percentage (0-100)
 
     Returns:
         Configured VoiceStreamingProvider instance
@@ -73,13 +75,14 @@ def create_streaming_provider(
     model = config.get("model")
     voice = config.get("voice")
 
-    logger.info(f"Creating {provider_name} streaming provider with model={model}, voice={voice}")
+    logger.info(f"Creating {provider_name} streaming provider with model={model}, voice={voice}, volume={volume}")
 
-    # Build kwargs - only pass input_sample_rate if supported
+    # Build kwargs
     kwargs = {
         "api_key": api_key,
         "model": model,
-        "voice": voice
+        "voice": voice,
+        "volume": volume
     }
     if input_sample_rate is not None and provider_name == "openai":
         kwargs["input_sample_rate"] = input_sample_rate

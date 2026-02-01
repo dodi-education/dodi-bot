@@ -107,6 +107,7 @@ class DODI:
         audio_config = settings.get("audio", {})
         self.sample_rate = audio_config.get("sample_rate", 16000)
         self.device_name = audio_config.get("input_device")
+        self.volume = audio_config.get("volume", 100)
 
         # Streaming config
         streaming_config = settings.get("streaming", {})
@@ -147,7 +148,7 @@ class DODI:
     def _init_audio_output(self) -> AudioOutput:
         """Initialize audio output."""
         if self._audio_output is None:
-            self._audio_output = AudioOutput()
+            self._audio_output = AudioOutput(volume=self.volume)
         return self._audio_output
 
     def _init_stt(self) -> VoskSTT:
@@ -164,7 +165,7 @@ class DODI:
         if self._tts is None:
             tts_config = self.settings.get("local_models", {}).get("tts", {})
             model_path = PROJECT_DIR / tts_config.get("model_path", "models/tts/en_US-lessac-medium.onnx")
-            self._tts = PiperTTS(str(model_path))
+            self._tts = PiperTTS(str(model_path), volume=self.volume)
             self._tts.initialize()
         return self._tts
 
@@ -239,6 +240,23 @@ class DODI:
                 max_turns=self.max_conversation_turns
             )
         return self._session
+
+    def _clear_audio_for_listening(self, audio_input, stt, delay: float = 0.5) -> None:
+        """
+        Clear buffered audio and reset STT to prepare for fresh listening.
+
+        This prevents echo/feedback from AI speech being interpreted as user input.
+        Uses a double-clear pattern with delay to catch lingering audio.
+
+        Args:
+            audio_input: Audio input instance with clear_queue() method
+            stt: STT instance with reset() method
+            delay: Seconds to wait between clears for echo to settle
+        """
+        audio_input.clear_queue()
+        stt.reset()
+        time.sleep(delay)
+        audio_input.clear_queue()
 
     def _build_context_prompt(self, session: ConversationSession) -> str:
         """Build system prompt with conversation history context."""
@@ -382,7 +400,8 @@ Continue the conversation naturally, referencing previous context when relevant.
                 self._voice_streaming_provider = create_streaming_provider(
                     self.streaming_provider_name,
                     self.streaming_provider_config,
-                    input_sample_rate=self.sample_rate
+                    input_sample_rate=self.sample_rate,
+                    volume=self.volume
                 )
                 logger.info(f"Voice streaming provider initialized: {self.streaming_provider_name}")
             except Exception as e:
@@ -457,14 +476,7 @@ Continue the conversation naturally, referencing previous context when relevant.
         audio_input = self._init_audio_input()
 
         # Clear any buffered audio from during AI speech (including echo)
-        audio_input.clear_queue()
-        stt.reset()
-
-        # Small delay to let any speaker echo settle
-        time.sleep(0.3)
-
-        # Clear again after delay in case more audio was captured
-        audio_input.clear_queue()
+        self._clear_audio_for_listening(audio_input, stt)
 
         session.set_waiting()
         start_time = time.time()
@@ -653,11 +665,21 @@ Continue the conversation naturally, referencing previous context when relevant.
             if self.debug:
                 print("[DEBUG] Follow-up detected - continuing conversation")
 
-    def _run_active_mode_voice(self, session: ConversationSession, initial_text: str = "") -> None:
+    def _run_active_mode_voice(
+        self,
+        session: ConversationSession,
+        initial_text: str = "",
+        greeting_prompt: str = ""
+    ) -> None:
         """
         Run active mode loop with voice streaming.
 
         Stays active until timeout or stop word, allowing multi-turn conversation.
+
+        Args:
+            session: Conversation session
+            initial_text: Optional text detected after wake word
+            greeting_prompt: Optional prompt to trigger AI speech first (for greetings)
         """
         logger.info("Entering active mode (voice streaming)")
         if self.debug:
@@ -666,9 +688,13 @@ Continue the conversation naturally, referencing previous context when relevant.
         while session.is_active():
             session.set_listening()
 
+            # On first turn, pass greeting prompt to trigger AI speech first
+            prompt_for_turn = greeting_prompt
+            greeting_prompt = ""  # Clear after first use
+
             # Run one voice turn with conversation context
             completed, user_text, ai_text = asyncio.run(
-                self._run_voice_session_with_context(session)
+                self._run_voice_session_with_context(session, initial_prompt=prompt_for_turn)
             )
 
             if not completed:
@@ -696,12 +722,17 @@ Continue the conversation naturally, referencing previous context when relevant.
             if self.debug:
                 print("[DEBUG] Follow-up detected - continuing conversation")
 
-    async def _run_voice_session_with_context(self, session: ConversationSession) -> tuple[bool, str, str]:
+    async def _run_voice_session_with_context(
+        self,
+        session: ConversationSession,
+        initial_prompt: str = ""
+    ) -> tuple[bool, str, str]:
         """
         Run a voice streaming session with conversation context.
 
         Args:
             session: Conversation session with history
+            initial_prompt: Optional prompt to send first (triggers AI speech before listening)
 
         Returns:
             Tuple of (completed, user_transcript, ai_transcript)
@@ -739,8 +770,15 @@ Continue the conversation naturally, referencing previous context when relevant.
             )
 
             logger.info("Voice streaming session started with context")
-            if self.debug:
-                print("[DEBUG] Voice streaming active - speak now...")
+
+            # If initial prompt provided (e.g., greeting), send it to trigger AI speech first
+            if initial_prompt:
+                if self.debug:
+                    print("[DEBUG] Sending initial prompt to trigger AI speech...")
+                await provider.send_text_prompt(initial_prompt)
+            else:
+                if self.debug:
+                    print("[DEBUG] Voice streaming active - speak now...")
 
             session.set_speaking()
 
@@ -957,8 +995,9 @@ Continue the conversation naturally, referencing previous context when relevant.
         # Use cloud voice streaming if available (preferred for natural voice)
         if self._can_use_voice_streaming():
             if self.debug:
-                print("[DEBUG] Using cloud voice for greeting")
-            asyncio.run(self._run_greeting_voice_session(session, greeting_prompt))
+                print("[DEBUG] Using cloud voice for greeting via active mode")
+            # Pass greeting prompt to active mode - it handles everything
+            self._run_active_mode_voice(session, greeting_prompt=greeting_prompt)
             return
 
         # Fallback to text-based greeting with local TTS
@@ -1022,131 +1061,6 @@ Continue the conversation naturally, referencing previous context when relevant.
             fallback = random.choice(self.greeting_words).capitalize() + "!"
             self.speak(fallback)
             return True, fallback
-
-    async def _run_greeting_voice_session(self, session: ConversationSession, greeting_prompt: str) -> None:
-        """
-        Run voice streaming session that starts with AI greeting.
-
-        Uses the cloud voice model to speak a greeting, then continues
-        listening for user follow-up in the same voice streaming session.
-
-        Args:
-            session: Active conversation session
-            greeting_prompt: The prompt to trigger AI greeting
-        """
-        provider = self._init_voice_streaming_provider()
-        if provider is None:
-            # Fallback to text-based greeting
-            logger.warning("Voice streaming provider not available, falling back to TTS")
-            response = self._generate_greeting(session, greeting_prompt)
-            self.speak(response)
-            if response:
-                session.history.add_assistant_message(response)
-            return
-
-        audio_input = self._init_audio_input()
-        stt = self._init_stt()
-        persona = self.load_persona()
-
-        session_complete = asyncio.Event()
-        ai_transcript = ""
-
-        def on_end():
-            session_complete.set()
-
-        def on_transcript(text: str):
-            nonlocal ai_transcript
-            ai_transcript += text
-
-        try:
-            session.set_processing()
-
-            # Start voice session with persona
-            await provider.start_session(
-                system_prompt=persona,
-                on_end=on_end,
-                on_transcript=on_transcript
-            )
-
-            logger.info("Voice greeting session started")
-            if self.debug:
-                print("[DEBUG] Sending greeting prompt to cloud voice...")
-
-            # Send greeting prompt to trigger AI speech
-            await provider.send_text_prompt(greeting_prompt)
-
-            session.set_speaking()
-
-            # Wait for greeting to complete (with timeout)
-            try:
-                await asyncio.wait_for(session_complete.wait(), timeout=15.0)
-            except asyncio.TimeoutError:
-                logger.warning("Greeting voice session timeout")
-
-            # Store greeting in history
-            if ai_transcript:
-                session.history.add_assistant_message(ai_transcript)
-                if self.debug:
-                    print(f"[DEBUG] AI greeting: {ai_transcript}")
-
-            if self.debug:
-                print("[DEBUG] Greeting complete, listening for follow-up...")
-
-            # Continue listening for follow-up conversation in the same voice session
-            session_complete.clear()
-            start_time = time.time()
-            silence_start = None
-            max_session_time = 30.0
-
-            while not session_complete.is_set():
-                # Check for timeout
-                if time.time() - start_time > max_session_time:
-                    logger.info("Voice session timeout - returning to passive")
-                    break
-
-                # Check for active conversation timeout (no speech for active_timeout seconds)
-                if silence_start and time.time() - silence_start > self.active_timeout:
-                    logger.info("No follow-up - returning to passive")
-                    break
-
-                audio_data = audio_input.read(timeout=0.05)
-                if audio_data:
-                    # Check for stop words
-                    if self.stop_words_enabled:
-                        result = stt.process_audio(audio_data)
-                        if result and self.contains_stop_word(result):
-                            logger.info(f"Stop word detected: {result}")
-                            await provider.interrupt()
-                            break
-
-                    # Skip sending audio while AI is speaking (avoid echo)
-                    if provider.is_speaking:
-                        continue
-
-                    await provider.send_audio(audio_data)
-                    silence_start = time.time()
-                else:
-                    if silence_start is None:
-                        silence_start = time.time()
-                    elif time.time() - silence_start > 1.5:
-                        # User stopped speaking, commit audio
-                        if hasattr(provider, 'commit_audio'):
-                            await provider.commit_audio()
-                        silence_start = time.time()
-
-                await asyncio.sleep(0.01)
-
-        except Exception as e:
-            logger.error(f"Greeting voice session error: {e}")
-            if self.debug:
-                print(f"[DEBUG] Voice session error: {e}")
-
-        finally:
-            try:
-                await provider.stop_session()
-            except Exception:
-                pass
-            stt.reset()
 
     def process_voice_streaming(self) -> bool:
         """
