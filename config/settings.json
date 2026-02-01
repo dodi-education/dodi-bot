@@ -3,9 +3,34 @@
     "code": "de",
     "auto_detect": false
   },
+  "conversation": {
+    "enabled": true,
+    "timeout_seconds": 10.0,
+    "max_turns": 20,
+    "reset_phrases": ["new topic", "start over", "neues thema", "vergiss das", "von vorne"]
+  },
   "persona": {
     "active": "default_de",
     "directory": "personas/"
+  },
+  "audio": {
+    "volume": 80,
+    "input_device": "seeed-2mic-voicecard",
+    "sample_rate": 16000
+  },
+  "wake_word": {
+    "enabled": true,
+    "phrases": ["dod", "der o d", "tode", "okay dod", "du die", "rudi", "hallo dod"]
+  },
+  "stop_words": {
+    "enabled": false,
+    "words": ["stop", "stopp", "be quiet", "shut up", "enough"]
+  },
+  "greeting_words": {
+    "enabled": true,
+    "words": ["hallo", "hallihallo", "guten morgen", "guten tag", "guten abend", "hi", "hey", "servus", "moin"],
+    "prompt_greeting": "Der Nutzer hat dich gerade begrüßt. Begrüße ihn zurück wie in deinen Anweisungen beschrieben.",
+    "prompt_greeting_with_query": "Der Nutzer begrüßt dich und fragt: {query}. Begrüße ihn kurz und beantworte dann seine Frage."
   },
   "streaming": {
     "enabled": true,
@@ -32,7 +57,7 @@
     },
     "openai": {
       "model": "gpt-4o-mini",
-      "temperature": 0.7,
+      "temperature": 0.5,
       "max_tokens": 512
     },
     "grok": {
@@ -51,18 +76,5 @@
       "model_path": "models/tts/de_DE-thorsten-medium.onnx",
       "voice": "de_DE-thorsten-medium"
     }
-  },
-  "audio": {
-    "volume": 80,
-    "input_device": "seeed-2mic-voicecard",
-    "sample_rate": 16000
-  },
-  "wake_word": {
-    "enabled": true,
-    "phrases": ["dod", "der o d", "tode", "okay dod", "du die", "rudi", "hallo dod"]
-  },
-  "stop_words": {
-    "enabled": false,
-    "words": ["stop", "stopp", "be quiet", "shut up", "enough"]
   }
 }

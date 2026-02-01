@@ -342,3 +342,27 @@ class OpenAIRealtimeProvider(VoiceStreamingProvider):
 
         # Create response
         await self._ws.send(json.dumps({"type": "response.create"}))
+
+    async def send_text_prompt(self, text: str) -> None:
+        """
+        Send a text prompt to trigger AI response without audio input.
+
+        This enables proactive speech from the AI (e.g., greetings).
+        """
+        if not self._connected or not self._ws:
+            return
+
+        logger.info(f"Sending text prompt: {text[:50]}...")
+
+        # Create a conversation item with user text
+        await self._ws.send(json.dumps({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": text}]
+            }
+        }))
+
+        # Trigger response generation
+        await self._ws.send(json.dumps({"type": "response.create"}))

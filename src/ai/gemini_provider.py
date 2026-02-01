@@ -1,7 +1,7 @@
 """Google Gemini AI provider implementation."""
 
 import logging
-from typing import Iterator, Optional
+from typing import Iterator, List, Optional
 
 from .provider_base import AIProviderBase
 
@@ -67,6 +67,87 @@ class GeminiProvider(AIProviderBase):
                     "temperature": self.temperature,
                     "max_output_tokens": self.max_tokens,
                 },
+            )
+
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+
+        except Exception as e:
+            logger.error(f"Gemini streaming error: {e}")
+            raise
+
+    def chat_with_history(
+        self,
+        messages: List[dict],
+        system_prompt: Optional[str] = None
+    ) -> str:
+        """Send conversation with history to Gemini."""
+        if self._client is None:
+            self._initialize_client()
+
+        try:
+            from google.genai import types
+
+            # Build Gemini contents from messages
+            contents = []
+            for msg in messages:
+                role = "user" if msg["role"] == "user" else "model"
+                contents.append(types.Content(
+                    role=role,
+                    parts=[types.Part(text=msg["content"])]
+                ))
+
+            config = {
+                "temperature": self.temperature,
+                "max_output_tokens": self.max_tokens,
+            }
+            if system_prompt:
+                config["system_instruction"] = system_prompt
+
+            response = self._client.models.generate_content(
+                model=self.model,
+                contents=contents,
+                config=config,
+            )
+            return response.text
+
+        except Exception as e:
+            logger.error(f"Gemini API error: {e}")
+            raise
+
+    def chat_stream_with_history(
+        self,
+        messages: List[dict],
+        system_prompt: Optional[str] = None
+    ) -> Iterator[str]:
+        """Stream response from Gemini with history."""
+        if self._client is None:
+            self._initialize_client()
+
+        try:
+            from google.genai import types
+
+            # Build Gemini contents from messages
+            contents = []
+            for msg in messages:
+                role = "user" if msg["role"] == "user" else "model"
+                contents.append(types.Content(
+                    role=role,
+                    parts=[types.Part(text=msg["content"])]
+                ))
+
+            config = {
+                "temperature": self.temperature,
+                "max_output_tokens": self.max_tokens,
+            }
+            if system_prompt:
+                config["system_instruction"] = system_prompt
+
+            response = self._client.models.generate_content_stream(
+                model=self.model,
+                contents=contents,
+                config=config,
             )
 
             for chunk in response:

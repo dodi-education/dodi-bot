@@ -243,3 +243,29 @@ class GeminiLiveProvider(VoiceStreamingProvider):
             self._start_audio_output()
 
         logger.info("Interrupt requested")
+
+    async def send_text_prompt(self, text: str) -> None:
+        """
+        Send a text prompt to trigger AI response without audio input.
+
+        This enables proactive speech from the AI (e.g., greetings).
+        """
+        if not self._connected or not self._session:
+            return
+
+        logger.info(f"Sending text prompt: {text[:50]}...")
+
+        try:
+            from google.genai import types
+
+            await self._session.send(
+                input=types.LiveClientContent(
+                    turns=[types.Content(
+                        role="user",
+                        parts=[types.Part(text=text)]
+                    )],
+                    turn_complete=True
+                )
+            )
+        except Exception as e:
+            logger.error(f"Error sending text prompt: {e}")

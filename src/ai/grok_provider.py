@@ -1,7 +1,7 @@
 """xAI Grok provider implementation."""
 
 import logging
-from typing import Iterator, Optional
+from typing import Iterator, List, Optional
 
 from .provider_base import AIProviderBase
 
@@ -66,6 +66,65 @@ class GrokProvider(AIProviderBase):
             response = self._client.chat.completions.create(
                 model=self.model,
                 messages=messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                stream=True,
+            )
+
+            for chunk in response:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+
+        except Exception as e:
+            logger.error(f"Grok streaming error: {e}")
+            raise
+
+    def chat_with_history(
+        self,
+        messages: List[dict],
+        system_prompt: Optional[str] = None
+    ) -> str:
+        """Send conversation with history to Grok."""
+        if self._client is None:
+            self._initialize_client()
+
+        try:
+            api_messages = []
+            if system_prompt:
+                api_messages.append({"role": "system", "content": system_prompt})
+            api_messages.extend(messages)
+
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=api_messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+            )
+
+            return response.choices[0].message.content
+
+        except Exception as e:
+            logger.error(f"Grok API error: {e}")
+            raise
+
+    def chat_stream_with_history(
+        self,
+        messages: List[dict],
+        system_prompt: Optional[str] = None
+    ) -> Iterator[str]:
+        """Stream response from Grok with history."""
+        if self._client is None:
+            self._initialize_client()
+
+        try:
+            api_messages = []
+            if system_prompt:
+                api_messages.append({"role": "system", "content": system_prompt})
+            api_messages.extend(messages)
+
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=api_messages,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
                 stream=True,
