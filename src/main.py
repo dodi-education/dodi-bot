@@ -9,6 +9,7 @@ import json
 import logging
 import time
 import argparse
+import asyncio
 from pathlib import Path
 from typing import Optional
 
@@ -40,8 +41,9 @@ from dotenv import load_dotenv
 
 from audio import AudioInput, AudioOutput
 from stt import VoskSTT
-from tts import PiperTTS
+from tts import PiperTTS, StreamingSpeechManager
 from ai.factory import create_provider
+from streaming.factory import create_streaming_provider, is_provider_available
 
 # Load environment variables
 PROJECT_DIR = Path(__file__).parent.parent
@@ -77,6 +79,13 @@ class DODI:
         self.sample_rate = audio_config.get("sample_rate", 16000)
         self.device_name = audio_config.get("input_device")
 
+        # Streaming config
+        streaming_config = settings.get("streaming", {})
+        self.use_streaming = streaming_config.get("enabled", True)
+        self.streaming_provider_name = streaming_config.get("active", "gemini")
+        self.streaming_provider_config = streaming_config.get(self.streaming_provider_name, {})
+        self.min_sentence_length = streaming_config.get("min_sentence_length", 10)
+
         # Initialize components (lazy loading)
         self._audio_input: Optional[AudioInput] = None
         self._audio_output: Optional[AudioOutput] = None
@@ -84,6 +93,8 @@ class DODI:
         self._tts: Optional[PiperTTS] = None
         self._ai_provider = None
         self._persona: str = ""
+        self._streaming_speech: Optional[StreamingSpeechManager] = None
+        self._voice_streaming_provider = None
 
     def _init_audio_input(self) -> AudioInput:
         """Initialize audio input."""
@@ -272,6 +283,184 @@ class DODI:
                 print(f"[DEBUG] AI error: {e}")
             return "Sorry, I'm having trouble thinking right now. Can you try again?"
 
+    def _init_streaming_speech(self) -> StreamingSpeechManager:
+        """Initialize streaming speech manager."""
+        if self._streaming_speech is None:
+            self._streaming_speech = StreamingSpeechManager(
+                tts=self._init_tts(),
+                stt=self._init_stt(),
+                audio_input=self._init_audio_input(),
+                stop_words=self.stop_words,
+                debug=self.debug
+            )
+        return self._streaming_speech
+
+    def _init_voice_streaming_provider(self):
+        """Initialize voice streaming provider."""
+        if self._voice_streaming_provider is None:
+            try:
+                self._voice_streaming_provider = create_streaming_provider(
+                    self.streaming_provider_name,
+                    self.streaming_provider_config,
+                    input_sample_rate=self.sample_rate
+                )
+                logger.info(f"Voice streaming provider initialized: {self.streaming_provider_name}")
+            except Exception as e:
+                logger.error(f"Failed to initialize voice streaming: {e}")
+                self._voice_streaming_provider = None
+        return self._voice_streaming_provider
+
+    def _can_use_voice_streaming(self) -> bool:
+        """Check if voice streaming is available."""
+        return (
+            self.use_streaming and
+            is_provider_available(self.streaming_provider_name)
+        )
+
+    async def _run_voice_session(self) -> bool:
+        """
+        Run a voice streaming session after wake word.
+
+        Returns:
+            True if completed successfully, False otherwise
+        """
+        provider = self._init_voice_streaming_provider()
+        if provider is None:
+            return False
+
+        audio_input = self._init_audio_input()
+        stt = self._init_stt()
+        persona = self.load_persona()
+
+        session_complete = asyncio.Event()
+        interrupted = False
+
+        def on_end():
+            session_complete.set()
+
+        try:
+            # Start voice session
+            await provider.start_session(
+                system_prompt=persona,
+                on_end=on_end
+            )
+
+            logger.info("Voice streaming session started")
+            if self.debug:
+                print("[DEBUG] Voice streaming active - speak now...")
+
+            # Stream audio to the provider until response is complete
+            start_time = time.time()
+            silence_start = None
+            max_session_time = 30.0  # Maximum session duration
+
+            while not session_complete.is_set():
+                # Check for timeout
+                if time.time() - start_time > max_session_time:
+                    logger.info("Session timeout")
+                    break
+
+                # Read audio from microphone
+                audio_data = audio_input.read(timeout=0.05)
+                if audio_data:
+                    # Check for stop words
+                    result = stt.process_audio(audio_data)
+                    if result and self.contains_stop_word(result):
+                        logger.info(f"Stop word detected: {result}")
+                        await provider.interrupt()
+                        interrupted = True
+                        break
+
+                    # Send audio to provider
+                    await provider.send_audio(audio_data)
+                    silence_start = time.time()
+                else:
+                    # Check for silence (end of user speech)
+                    if silence_start and time.time() - silence_start > 1.5:
+                        # User has stopped speaking, commit audio
+                        if hasattr(provider, 'commit_audio'):
+                            await provider.commit_audio()
+                        silence_start = None
+
+                # Small delay to prevent busy-waiting
+                await asyncio.sleep(0.01)
+
+            return not interrupted
+
+        except Exception as e:
+            logger.error(f"Voice session error: {e}")
+            if self.debug:
+                print(f"[DEBUG] Voice session error: {e}")
+            return False
+
+        finally:
+            try:
+                await provider.stop_session()
+            except Exception:
+                pass
+            stt.reset()
+
+    def process_voice_streaming(self) -> bool:
+        """
+        Process a voice conversation using voice streaming.
+
+        Returns:
+            True if completed, False if interrupted or failed
+        """
+        logger.info(f"Starting voice streaming with {self.streaming_provider_name}")
+        if self.debug:
+            print(f"[DEBUG] Voice streaming provider: {self.streaming_provider_name}")
+
+        try:
+            return asyncio.run(self._run_voice_session())
+        except Exception as e:
+            logger.error(f"Voice streaming failed: {e}")
+            if self.debug:
+                print(f"[DEBUG] Voice streaming failed: {e}")
+            return False
+
+    def process_command_streaming(self, command: str) -> bool:
+        """
+        Process command with streaming response and speech.
+
+        Args:
+            command: User command text
+
+        Returns:
+            True if completed, False if interrupted
+        """
+        if not command.strip():
+            self.speak("I didn't catch that. Could you say it again?")
+            return True
+
+        logger.info(f"Processing command (streaming): {command}")
+        ai = self._init_ai_provider()
+        persona = self.load_persona()
+        streaming_speech = self._init_streaming_speech()
+
+        try:
+            if self.debug:
+                print(f"[DEBUG] Sending to AI (streaming): {command}")
+
+            # Get streaming response from AI
+            text_stream = ai.chat_stream(command, system_prompt=persona)
+
+            # Stream and speak
+            return streaming_speech.stream_and_speak(text_stream)
+
+        except Exception as e:
+            logger.error(f"AI streaming error: {e}")
+            if self.debug:
+                print(f"[DEBUG] AI streaming error: {e}")
+            # Fall back to non-streaming
+            try:
+                response = self.process_command(command)
+                return self.speak(response)
+            except Exception as fallback_error:
+                logger.error(f"Fallback also failed: {fallback_error}")
+                self.speak("Sorry, I'm having trouble right now.")
+                return False
+
     def run(self) -> None:
         """Main conversation loop."""
         print()
@@ -279,6 +468,13 @@ class DODI:
         print("  DODI is listening...")
         print(f"  Wake words: {', '.join(self.wake_words)}")
         print(f"  Stop words: {', '.join(self.stop_words)}")
+        if self.use_streaming:
+            if self._can_use_voice_streaming():
+                print(f"  Voice streaming: {self.streaming_provider_name}")
+            else:
+                print("  Text streaming: enabled (voice API key not set)")
+        else:
+            print("  Streaming: disabled")
         print("  Press Ctrl+C to exit")
         print("=" * 50)
         print()
@@ -334,24 +530,31 @@ class DODI:
                         if self.debug:
                             print(f"[DEBUG] Wake word found! After wake: '{after_wake}'")
 
-                        # If there's already a command after the wake word, use it
-                        if after_wake:
-                            command = after_wake
+                        # Check if voice streaming is available
+                        if self._can_use_voice_streaming():
+                            # Use voice streaming - no need to capture command text
+                            self.process_voice_streaming()
                         else:
-                            # Listen for the command
-                            command = self.listen_for_command(timeout=5.0)
+                            # Fall back to text-based processing
+                            # If there's already a command after the wake word, use it
+                            if after_wake:
+                                command = after_wake
+                            else:
+                                # Listen for the command
+                                command = self.listen_for_command(timeout=5.0)
 
-                        if command:
-                            # Check for stop words in command
-                            if self.contains_stop_word(command):
-                                logger.info("Stop word in command - ignoring")
-                                continue
+                            if command:
+                                # Check for stop words in command
+                                if self.contains_stop_word(command):
+                                    logger.info("Stop word in command - ignoring")
+                                    continue
 
-                            # Get AI response
-                            response = self.process_command(command)
-
-                            # Speak the response
-                            self.speak(response)
+                                # Process and speak response
+                                if self.use_streaming:
+                                    self.process_command_streaming(command)
+                                else:
+                                    response = self.process_command(command)
+                                    self.speak(response)
 
                         stt.reset()
 

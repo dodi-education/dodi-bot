@@ -7,10 +7,26 @@
     "active": "default_de",
     "directory": "personas/"
   },
+  "streaming": {
+    "enabled": true,
+    "active": "openai",
+    "openai": {
+      "model": "gpt-realtime",
+      "voice": "alloy"
+    },
+    "gemini": {
+      "model": "gemini-2.5-flash-native-audio-preview-12-2025",
+      "voice": "Puck"
+    },
+    "grok": {
+      "model": "grok-4-voice",
+      "voice": "Ara"
+    }
+  },
   "ai_provider": {
     "active": "gemini",
     "gemini": {
-      "model": "gemini-2.0-flash",
+      "model": "gemini-3-flash-preview",
       "temperature": 0.7,
       "max_tokens": 512
     },

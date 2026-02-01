@@ -1,7 +1,7 @@
 """xAI Grok provider implementation."""
 
 import logging
-from typing import Optional
+from typing import Iterator, Optional
 
 from .provider_base import AIProviderBase
 
@@ -50,6 +50,33 @@ class GrokProvider(AIProviderBase):
 
         except Exception as e:
             logger.error(f"Grok API error: {e}")
+            raise
+
+    def chat_stream(self, message: str, system_prompt: Optional[str] = None) -> Iterator[str]:
+        """Stream response chunks from Grok."""
+        if self._client is None:
+            self._initialize_client()
+
+        try:
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": message})
+
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                stream=True,
+            )
+
+            for chunk in response:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+
+        except Exception as e:
+            logger.error(f"Grok streaming error: {e}")
             raise
 
     def validate_connection(self) -> bool:
