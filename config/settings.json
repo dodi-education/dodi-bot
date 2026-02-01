@@ -14,7 +14,7 @@
     "directory": "personas/"
   },
   "audio": {
-    "volume": 80,
+    "volume": 50,
     "input_device": "seeed-2mic-voicecard",
     "sample_rate": 16000
   },

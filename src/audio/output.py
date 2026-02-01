@@ -9,14 +9,17 @@ from typing import Optional
 import sounddevice as sd
 import numpy as np
 
+from .volume import scale_volume
+
 logger = logging.getLogger(__name__)
 
 
 class AudioOutput:
     """Handles audio playback with interruption support."""
 
-    def __init__(self, sample_rate: int = 22050):
+    def __init__(self, sample_rate: int = 22050, volume: int = 100):
         self.sample_rate = sample_rate
+        self.volume = volume
         self._playing = False
         self._interrupt_flag = threading.Event()
         self._play_thread: Optional[threading.Thread] = None
@@ -40,6 +43,9 @@ class AudioOutput:
             self._interrupt_flag.clear()
 
         try:
+            # Apply volume scaling
+            audio_data = scale_volume(audio_data, self.volume)
+
             # Play in chunks to allow interruption
             chunk_size = int(rate * 0.1)  # 100ms chunks
             total_samples = len(audio_data)

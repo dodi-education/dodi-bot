@@ -21,7 +21,8 @@ class GrokRealtimeProvider(OpenAIRealtimeProvider):
         api_key: str,
         model: str = "grok-4-voice",
         voice: str = "default",
-        sample_rate: int = 24000
+        sample_rate: int = 24000,
+        volume: int = 100
     ):
         """
         Initialize Grok Realtime provider.
@@ -31,13 +32,15 @@ class GrokRealtimeProvider(OpenAIRealtimeProvider):
             model: Model to use (default: grok-2-voice)
             voice: Voice for responses
             sample_rate: Audio sample rate
+            volume: Output volume percentage (0-100)
         """
         super().__init__(
             api_key=api_key,
             model=model,
             voice=voice,
             sample_rate=sample_rate,
-            base_url=GROK_REALTIME_URL
+            base_url=GROK_REALTIME_URL,
+            volume=volume
         )
 
     def get_provider_name(self) -> str:
