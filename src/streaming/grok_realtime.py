@@ -22,6 +22,7 @@ class GrokRealtimeProvider(OpenAIRealtimeProvider):
         model: str = "grok-4-voice",
         voice: str = "default",
         sample_rate: int = 24000,
+        input_sample_rate: int = None,
         volume: int = 100
     ):
         """
@@ -39,6 +40,7 @@ class GrokRealtimeProvider(OpenAIRealtimeProvider):
             model=model,
             voice=voice,
             sample_rate=sample_rate,
+            input_sample_rate=input_sample_rate,
             base_url=GROK_REALTIME_URL,
             volume=volume
         )

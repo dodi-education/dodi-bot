@@ -84,7 +84,7 @@ def create_streaming_provider(
         "voice": voice,
         "volume": volume
     }
-    if input_sample_rate is not None and provider_name == "openai":
+    if input_sample_rate is not None and provider_name in ("openai", "grok"):
         kwargs["input_sample_rate"] = input_sample_rate
 
     return provider_class(**kwargs)
