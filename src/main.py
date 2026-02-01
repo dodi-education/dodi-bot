@@ -72,7 +72,14 @@ class DODI:
             self.wake_words = [self.wake_words]
         self.wake_words = [w.lower() for w in self.wake_words]
 
-        self.stop_words = [w.lower() for w in settings.get("stop_words", ["stop"])]
+        stop_words_config = settings.get("stop_words", {})
+        if isinstance(stop_words_config, list):
+            # Backwards compatibility with old array format
+            self.stop_words_enabled = True
+            self.stop_words = [w.lower() for w in stop_words_config]
+        else:
+            self.stop_words_enabled = stop_words_config.get("enabled", True)
+            self.stop_words = [w.lower() for w in stop_words_config.get("words", ["stop"])]
 
         # Audio settings
         audio_config = settings.get("audio", {})
@@ -192,16 +199,19 @@ class DODI:
         # Start speaking in background
         piper_proc, aplay_proc = tts.speak_async(text)
 
-        # Listen for stop words while speaking
+        # Listen for stop words while speaking (if enabled)
         stt.reset()
         while tts.is_speaking(aplay_proc):
-            audio_data = audio_input.read(timeout=0.1)
-            if audio_data:
-                result = stt.process_audio(audio_data)
-                if result and self.contains_stop_word(result):
-                    logger.info(f"Stop word detected: {result}")
-                    tts.stop_speaking(piper_proc, aplay_proc)
-                    return False  # Interrupted
+            if self.stop_words_enabled:
+                audio_data = audio_input.read(timeout=0.1)
+                if audio_data:
+                    result = stt.process_audio(audio_data)
+                    if result and self.contains_stop_word(result):
+                        logger.info(f"Stop word detected: {result}")
+                        tts.stop_speaking(piper_proc, aplay_proc)
+                        return False  # Interrupted
+            else:
+                time.sleep(0.1)
 
         # Check final exit codes
         piper_proc.wait()
@@ -363,13 +373,18 @@ class DODI:
                 # Read audio from microphone
                 audio_data = audio_input.read(timeout=0.05)
                 if audio_data:
-                    # Check for stop words
-                    result = stt.process_audio(audio_data)
-                    if result and self.contains_stop_word(result):
-                        logger.info(f"Stop word detected: {result}")
-                        await provider.interrupt()
-                        interrupted = True
-                        break
+                    # Check for stop words (if enabled) - always process, even while AI is speaking
+                    if self.stop_words_enabled:
+                        result = stt.process_audio(audio_data)
+                        if result and self.contains_stop_word(result):
+                            logger.info(f"Stop word detected: {result}")
+                            await provider.interrupt()
+                            interrupted = True
+                            break
+
+                    # Skip sending audio to provider while AI is speaking (avoid echo feedback)
+                    if provider.is_speaking:
+                        continue
 
                     # Send audio to provider
                     await provider.send_audio(audio_data)
@@ -399,6 +414,29 @@ class DODI:
             except Exception:
                 pass
             stt.reset()
+
+    def _handle_wake_activation(self, after_wake: str = "") -> None:
+        """
+        Handle wake word activation - start voice streaming or text processing.
+
+        Args:
+            after_wake: Optional text detected after the wake word (for text mode)
+        """
+        if self._can_use_voice_streaming():
+            self.process_voice_streaming()
+        else:
+            # Text-based processing fallback
+            if after_wake:
+                command = after_wake
+            else:
+                command = self.listen_for_command(timeout=5.0)
+
+            if command and not self.contains_stop_word(command):
+                if self.use_streaming:
+                    self.process_command_streaming(command)
+                else:
+                    response = self.process_command(command)
+                    self.speak(response)
 
     def process_voice_streaming(self) -> bool:
         """
@@ -467,7 +505,10 @@ class DODI:
         print("=" * 50)
         print("  DODI is listening...")
         print(f"  Wake words: {', '.join(self.wake_words)}")
-        print(f"  Stop words: {', '.join(self.stop_words)}")
+        if self.stop_words_enabled:
+            print(f"  Stop words: {', '.join(self.stop_words)}")
+        else:
+            print("  Stop words: disabled")
         if self.use_streaming:
             if self._can_use_voice_streaming():
                 print(f"  Voice streaming: {self.streaming_provider_name}")
@@ -510,16 +551,17 @@ class DODI:
                 # Process audio for wake word detection
                 result = stt.process_audio(audio_data)
                 if not result:
-                    # Check partial for faster wake word detection
+                    # Check partial for immediate wake word activation
                     partial = stt.get_partial()
                     if partial:
                         if self.debug:
                             print(f"[DEBUG] Partial: {partial}")
                         has_wake, _ = self.contains_wake_word(partial)
                         if has_wake:
-                            # Wait for complete utterance
-                            time.sleep(0.5)
-                            result = stt.finalize()
+                            logger.info(f"Wake word detected in partial: {partial}")
+                            stt.reset()
+                            self._handle_wake_activation()
+                            continue
 
                 if result:
                     if self.debug:
@@ -529,34 +571,8 @@ class DODI:
                         logger.info(f"Wake word detected in: {result}")
                         if self.debug:
                             print(f"[DEBUG] Wake word found! After wake: '{after_wake}'")
-
-                        # Check if voice streaming is available
-                        if self._can_use_voice_streaming():
-                            # Use voice streaming - no need to capture command text
-                            self.process_voice_streaming()
-                        else:
-                            # Fall back to text-based processing
-                            # If there's already a command after the wake word, use it
-                            if after_wake:
-                                command = after_wake
-                            else:
-                                # Listen for the command
-                                command = self.listen_for_command(timeout=5.0)
-
-                            if command:
-                                # Check for stop words in command
-                                if self.contains_stop_word(command):
-                                    logger.info("Stop word in command - ignoring")
-                                    continue
-
-                                # Process and speak response
-                                if self.use_streaming:
-                                    self.process_command_streaming(command)
-                                else:
-                                    response = self.process_command(command)
-                                    self.speak(response)
-
                         stt.reset()
+                        self._handle_wake_activation(after_wake)
 
         except KeyboardInterrupt:
             print("\n\nShutting down...")
