@@ -1,7 +1,7 @@
 """Abstract base class for AI providers."""
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Iterator, Optional
 
 
 class AIProviderBase(ABC):
@@ -30,6 +30,20 @@ class AIProviderBase(ABC):
 
         Returns:
             Response text from the AI
+        """
+        pass
+
+    @abstractmethod
+    def chat_stream(self, message: str, system_prompt: Optional[str] = None) -> Iterator[str]:
+        """
+        Send a message and stream response chunks as they arrive.
+
+        Args:
+            message: User message text
+            system_prompt: Optional system prompt (persona)
+
+        Yields:
+            Response text chunks as they are generated
         """
         pass
 

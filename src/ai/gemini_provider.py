@@ -1,7 +1,7 @@
 """Google Gemini AI provider implementation."""
 
 import logging
-from typing import Optional
+from typing import Iterator, Optional
 
 from .provider_base import AIProviderBase
 
@@ -48,6 +48,33 @@ class GeminiProvider(AIProviderBase):
 
         except Exception as e:
             logger.error(f"Gemini API error: {e}")
+            raise
+
+    def chat_stream(self, message: str, system_prompt: Optional[str] = None) -> Iterator[str]:
+        """Stream response chunks from Gemini."""
+        if self._client is None:
+            self._initialize_client()
+
+        try:
+            full_prompt = message
+            if system_prompt:
+                full_prompt = f"{system_prompt}\n\nUser: {message}"
+
+            response = self._client.models.generate_content_stream(
+                model=self.model,
+                contents=full_prompt,
+                config={
+                    "temperature": self.temperature,
+                    "max_output_tokens": self.max_tokens,
+                },
+            )
+
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+
+        except Exception as e:
+            logger.error(f"Gemini streaming error: {e}")
             raise
 
     def validate_connection(self) -> bool:
