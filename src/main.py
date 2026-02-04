@@ -672,55 +672,338 @@ Continue the conversation naturally, referencing previous context when relevant.
         greeting_prompt: str = ""
     ) -> None:
         """
-        Run active mode loop with voice streaming.
+        Run active mode loop with voice streaming (persistent connection).
 
-        Stays active until timeout or stop word, allowing multi-turn conversation.
+        Maintains a single provider connection across multiple turns for
+        minimal latency. Only disconnects on timeout or stop word.
 
         Args:
             session: Conversation session
             initial_text: Optional text detected after wake word
             greeting_prompt: Optional prompt to trigger AI speech first (for greetings)
         """
-        logger.info("Entering active mode (voice streaming)")
+        logger.info("Entering active mode (voice streaming - persistent)")
         if self.debug:
-            print("[DEBUG] Active mode started (voice streaming)...")
+            print("[DEBUG] Active mode started (persistent voice streaming)...")
+
+        provider = self._init_voice_streaming_provider()
+        if provider is None:
+            logger.error("Failed to initialize voice streaming provider")
+            return
+
+        try:
+            asyncio.run(
+                self._run_persistent_voice_session(provider, session, greeting_prompt)
+            )
+        finally:
+            # Always ensure cleanup - disconnect only here
+            try:
+                asyncio.run(provider.stop_session())
+            except Exception:
+                pass
+
+    async def _try_reconnect_provider(
+        self,
+        provider,
+        context_prompt: str,
+        on_end,
+        on_transcript,
+        max_attempts: int = 2
+    ) -> bool:
+        """
+        Attempt to reconnect a failed voice session.
+
+        Args:
+            provider: Voice streaming provider
+            context_prompt: System prompt to use
+            on_end: End callback
+            on_transcript: Transcript callback
+            max_attempts: Maximum reconnection attempts
+
+        Returns:
+            True if reconnection succeeded, False otherwise
+        """
+        for attempt in range(max_attempts):
+            logger.info(f"Reconnection attempt {attempt + 1}/{max_attempts}")
+
+            try:
+                await provider.stop_session()
+            except Exception as e:
+                logger.debug(f"Error stopping old session (ignored): {e}")
+
+            await asyncio.sleep(0.5)
+
+            try:
+                await provider.start_session(
+                    system_prompt=context_prompt,
+                    on_end=on_end,
+                    on_transcript=on_transcript
+                )
+                logger.info("Reconnection successful")
+                return True
+            except Exception as e:
+                logger.error(f"Reconnection attempt {attempt + 1} failed: {e}")
+                if attempt < max_attempts - 1:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+
+        return False
+
+    async def _run_persistent_voice_session(
+        self,
+        provider,
+        session: ConversationSession,
+        greeting_prompt: str = ""
+    ) -> None:
+        """
+        Run voice session with persistent connection across multiple turns.
+
+        Keeps provider connected throughout the conversation, only disconnecting
+        when returning to passive mode. This eliminates reconnection latency
+        between turns.
+
+        Args:
+            provider: Voice streaming provider (already initialized)
+            session: Conversation session
+            greeting_prompt: Optional prompt to trigger AI speech first
+        """
+        audio_input = self._init_audio_input()
+        stt = self._init_stt()
+
+        # Build initial context and connect ONCE
+        context_prompt = self._build_context_prompt(session)
+
+        session_complete = asyncio.Event()
+        ai_transcript = ""
+
+        def on_end():
+            session_complete.set()
+
+        def on_transcript(text: str):
+            nonlocal ai_transcript
+            ai_transcript += text
+
+        # START SESSION (connect once for entire conversation)
+        await provider.start_session(
+            system_prompt=context_prompt,
+            on_end=on_end,
+            on_transcript=on_transcript
+        )
+
+        # Clear stale audio accumulated during connection
+        audio_input.clear_queue()
+        stt.reset()
+
+        logger.info("Voice streaming session started (persistent)")
+        if self.debug:
+            print("[DEBUG] Voice streaming active - speak now...")
+
+        first_turn = True
 
         while session.is_active():
             session.set_listening()
 
-            # On first turn, pass greeting prompt to trigger AI speech first
-            prompt_for_turn = greeting_prompt
-            greeting_prompt = ""  # Clear after first use
+            # Reset for this turn
+            session_complete.clear()
+            ai_transcript = ""
 
-            # Run one voice turn with conversation context
-            completed, user_text, ai_text = asyncio.run(
-                self._run_voice_session_with_context(session, initial_prompt=prompt_for_turn)
+            # Send greeting on first turn if provided
+            if first_turn and greeting_prompt:
+                if self.debug:
+                    print("[DEBUG] Sending greeting prompt...")
+                await provider.send_text_prompt(greeting_prompt)
+                first_turn = False
+
+            # Handle one voice turn (no connect/disconnect)
+            completed, user_text = await self._handle_voice_turn_persistent(
+                provider, session, audio_input, stt, session_complete
             )
 
             if not completed:
-                # Interrupted or failed
                 logger.info("Voice session interrupted - returning to passive")
                 break
 
             # Store transcripts in history
             if user_text:
                 session.history.add_user_message(user_text)
-            if ai_text:
-                session.history.add_assistant_message(ai_text)
+            if ai_transcript:
+                session.history.add_assistant_message(ai_transcript)
 
-            # Wait for follow-up or timeout
+            # Prepare for next turn (clear buffers, keep connected)
+            await provider.prepare_for_next_turn()
+
+            # Send immediate keepalive to prevent connection timeout
+            # (Gemini's connection can die quickly after turn complete)
+            keepalive_ok = await provider.send_keepalive()
+            if not keepalive_ok:
+                logger.warning("Connection lost after turn complete - attempting reconnect")
+                reconnected = await self._try_reconnect_provider(
+                    provider, context_prompt, on_end, on_transcript
+                )
+                if not reconnected:
+                    logger.error("Failed to reconnect - returning to passive mode")
+                    break
+                logger.info("Reconnected - continuing session")
+
+            # Wait for follow-up while staying connected
             if self.debug:
                 print(f"[DEBUG] Waiting for follow-up (timeout: {self.active_timeout}s)...")
 
-            if not self._wait_for_followup_or_timeout(session):
+            follow_up = await self._wait_for_followup_persistent(
+                provider, session, audio_input, stt
+            )
+
+            if not follow_up:
                 logger.info("No follow-up - returning to passive")
                 if self.debug:
                     print("[DEBUG] No follow-up detected - returning to passive")
                 break
 
-            # User is speaking - loop continues
+            # Follow-up detected - continue conversation
             if self.debug:
                 print("[DEBUG] Follow-up detected - continuing conversation")
+
+            # Verify connection is still alive before next turn
+            keepalive_ok = await provider.send_keepalive()
+            if not keepalive_ok:
+                logger.warning("Connection lost before next turn - attempting reconnect")
+                reconnected = await self._try_reconnect_provider(
+                    provider, context_prompt, on_end, on_transcript
+                )
+                if not reconnected:
+                    logger.error("Failed to reconnect - returning to passive mode")
+                    break
+                logger.info("Reconnected - continuing session")
+
+            # Update context if provider supports it (OpenAI/Grok)
+            if provider.supports_session_update:
+                new_context = self._build_context_prompt(session)
+                await provider.update_session_instructions(new_context)
+
+        # Session ends - disconnect happens in finally block of caller
+
+    async def _handle_voice_turn_persistent(
+        self,
+        provider,
+        session: ConversationSession,
+        audio_input,
+        stt,
+        session_complete: asyncio.Event
+    ) -> tuple[bool, str]:
+        """
+        Handle a single voice turn without connecting/disconnecting.
+
+        Streams audio to provider and waits for AI response.
+
+        Args:
+            provider: Voice streaming provider (already connected)
+            session: Conversation session
+            audio_input: Audio input handler
+            stt: Speech-to-text handler
+            session_complete: Event signaled when AI finishes responding
+
+        Returns:
+            Tuple of (completed, user_transcript)
+        """
+        session.set_processing()
+        user_transcript = ""
+
+        start_time = time.time()
+        silence_start = None
+        max_turn_time = 30.0
+
+        while not session_complete.is_set():
+            if time.time() - start_time > max_turn_time:
+                logger.info("Turn timeout")
+                break
+
+            # Check if connection died mid-turn
+            if not provider.is_connected:
+                logger.warning("Connection lost during turn")
+                break
+
+            audio_data = audio_input.read(timeout=0.05)
+            if audio_data:
+                # Check for stop words
+                if self.stop_words_enabled:
+                    result = stt.process_audio(audio_data)
+                    if result:
+                        user_transcript = result
+                        if self.contains_stop_word(result):
+                            logger.info(f"Stop word detected: {result}")
+                            await provider.interrupt()
+                            return False, user_transcript
+
+                # Don't send audio while AI is speaking
+                if provider.is_speaking:
+                    continue
+
+                await provider.send_audio(audio_data)
+                silence_start = time.time()
+            else:
+                # Handle silence - commit audio after pause
+                if silence_start and time.time() - silence_start > 1.5:
+                    if hasattr(provider, 'commit_audio'):
+                        await provider.commit_audio()
+                    silence_start = None
+
+            await asyncio.sleep(0.01)
+
+        session.set_speaking()
+        return True, user_transcript
+
+    async def _wait_for_followup_persistent(
+        self,
+        provider,
+        session: ConversationSession,
+        audio_input,
+        stt
+    ) -> bool:
+        """
+        Wait for follow-up speech while keeping provider connected.
+
+        Sends periodic keepalive messages to prevent connection timeout
+        (particularly important for Gemini).
+
+        Args:
+            provider: Voice streaming provider (for keepalive)
+            session: Conversation session
+            audio_input: Audio input handler
+            stt: Speech-to-text handler
+
+        Returns:
+            True if user started speaking, False if timeout
+        """
+        # Clear buffers for clean listening
+        self._clear_audio_for_listening(audio_input, stt)
+
+        session.set_waiting()
+        start_time = time.time()
+        last_keepalive = time.time()
+        KEEPALIVE_INTERVAL = 2.0  # Send keepalive every 2 seconds (Gemini needs frequent keepalives)
+
+        while time.time() - start_time < self.active_timeout:
+            audio_data = audio_input.read(timeout=0.1)
+            if audio_data:
+                result = stt.process_audio(audio_data)
+                if result:
+                    session.cancel_timeout()
+                    return True
+                partial = stt.get_partial()
+                if partial:
+                    session.cancel_timeout()
+                    return True
+
+            # Send keepalive to prevent connection timeout (for Gemini)
+            if time.time() - last_keepalive > KEEPALIVE_INTERVAL:
+                keepalive_ok = await provider.send_keepalive()
+                last_keepalive = time.time()
+                if not keepalive_ok:
+                    logger.warning("Connection lost during follow-up wait")
+                    return False  # Connection dead, exit
+
+            await asyncio.sleep(0.01)
+
+        return False
 
     async def _run_voice_session_with_context(
         self,

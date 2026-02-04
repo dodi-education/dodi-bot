@@ -67,6 +67,17 @@ class GeminiLiveProvider(VoiceStreamingProvider):
                         voice_name=self.voice
                     )
                 )
+            ),
+            # Enable automatic voice activity detection for turn-taking
+            # This lets Gemini detect when the user stops speaking
+            # Use LOW end sensitivity to avoid cutting off mid-sentence
+            realtime_input_config=types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    disabled=False,
+                    startOfSpeechSensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                    endOfSpeechSensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
+                    silenceDurationMs=1000  # Require 1 second of silence before end
+                )
             )
         )
 
@@ -186,9 +197,21 @@ class GeminiLiveProvider(VoiceStreamingProvider):
                 await self._handle_response(response)
 
         except asyncio.CancelledError:
+            # Normal cancellation during disconnect
             pass
         except Exception as e:
+            # Mark connection as dead so callers know to reconnect
+            self._connected = False
+            self._session = None
             logger.error(f"Error in receive loop: {e}")
+
+            # Call end callback to unblock session_complete waits
+            # This prevents the main loop from waiting forever
+            if self._end_callback:
+                try:
+                    self._end_callback()
+                except Exception as cb_error:
+                    logger.error(f"Error in end callback: {cb_error}")
 
     async def _handle_response(self, response) -> None:
         """Handle incoming response from Gemini."""
@@ -280,3 +303,55 @@ class GeminiLiveProvider(VoiceStreamingProvider):
         # Gemini Live API doesn't have a buffer clear mechanism like OpenAI
         # The local audio queue clearing should be sufficient
         pass
+
+    async def prepare_for_next_turn(self) -> None:
+        """
+        Prepare Gemini session for next turn.
+
+        The Gemini receive() generator ends after each turn_complete,
+        so we need to restart the receive loop for the next turn.
+        """
+        self._is_speaking = False
+        self._speaking_ended_at = None
+
+        # Restart receive loop if it completed (normal after turn_complete)
+        if self._receive_task is not None and self._receive_task.done():
+            # Check if it ended with an error
+            try:
+                self._receive_task.result()
+            except Exception as e:
+                logger.warning(f"Previous receive task ended with error: {e}")
+
+            # Start new receive loop for next turn
+            logger.debug("Restarting receive loop for next turn")
+            self._receive_task = asyncio.create_task(self._receive_loop())
+
+    async def send_keepalive(self) -> bool:
+        """
+        Check if the Gemini connection is still alive.
+
+        Note: We don't send silent audio as it confuses Gemini's VAD.
+        Just checks connection state - the _connected flag is set to False
+        by _receive_loop() when actual errors occur.
+
+        Returns:
+            True if connection appears alive, False if dead
+        """
+        # Note: Don't check if receive_task.done() here - the receive task
+        # completes normally after each turn (when Gemini sends turn_complete),
+        # which doesn't mean the connection is dead.
+        return self._connected and self._session is not None
+
+    async def commit_audio(self) -> None:
+        """
+        Signal to Gemini that the user's audio input is complete.
+
+        Note: With automatic_activity_detection enabled, Gemini's VAD
+        handles turn detection automatically. Sending LiveClientContent
+        after LiveClientRealtimeInput causes protocol errors (1007).
+        This method is now a no-op.
+        """
+        # No-op: Gemini's automatic VAD handles turn detection
+        # Sending LiveClientContent(turn_complete=True) after streaming
+        # audio via LiveClientRealtimeInput causes error 1007
+        logger.debug("commit_audio called (no-op with automatic VAD)")
