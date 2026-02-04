@@ -394,3 +394,36 @@ class OpenAIRealtimeProvider(VoiceStreamingProvider):
             logger.info("Input audio buffer cleared (acknowledged)")
         except asyncio.TimeoutError:
             logger.warning("Timeout waiting for buffer clear acknowledgment")
+
+    @property
+    def supports_session_update(self) -> bool:
+        """OpenAI Realtime API supports session.update to change instructions."""
+        return True
+
+    async def update_session_instructions(self, instructions: str) -> bool:
+        """
+        Update session instructions via session.update message.
+
+        The OpenAI Realtime API allows updating instructions mid-session
+        without reconnecting.
+        """
+        if not self._connected or not self._ws:
+            return False
+
+        try:
+            await self._ws.send(json.dumps({
+                "type": "session.update",
+                "session": {
+                    "instructions": instructions
+                }
+            }))
+            logger.info("Session instructions updated")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to update session instructions: {e}")
+            return False
+
+    async def prepare_for_next_turn(self) -> None:
+        """Prepare for next turn by clearing buffers and resetting state."""
+        await self.clear_input_buffer()
+        self._audio_chunks_sent = 0

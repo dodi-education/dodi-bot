@@ -34,14 +34,14 @@
   },
   "streaming": {
     "enabled": true,
-    "active": "grok",
+    "active": "gemini",
     "openai": {
       "model": "gpt-realtime",
       "voice": "alloy"
     },
     "gemini": {
       "model": "gemini-2.5-flash-native-audio-preview-12-2025",
-      "voice": "Puck"
+      "voice": "Leda"
     },
     "grok": {
       "model": "grok-4-voice",

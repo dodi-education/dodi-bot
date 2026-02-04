@@ -164,3 +164,50 @@ class VoiceStreamingProvider(ABC):
     def get_provider_name(self) -> str:
         """Return the provider name for logging."""
         return self.__class__.__name__.replace("Provider", "")
+
+    @property
+    def supports_session_update(self) -> bool:
+        """
+        Whether this provider can update instructions mid-session.
+
+        Returns:
+            True if provider supports session.update or equivalent
+        """
+        return False
+
+    async def update_session_instructions(self, instructions: str) -> bool:
+        """
+        Update session instructions without reconnecting.
+
+        For providers that support it (OpenAI/Grok), this updates the
+        system instructions mid-session.
+
+        Args:
+            instructions: New system prompt/instructions
+
+        Returns:
+            True if update succeeded, False otherwise
+        """
+        return False
+
+    async def prepare_for_next_turn(self) -> None:
+        """
+        Prepare the session for the next conversation turn.
+
+        Called between turns to clear buffers and reset state while
+        keeping the connection alive. Default implementation clears
+        the input buffer.
+        """
+        await self.clear_input_buffer()
+
+    async def send_keepalive(self) -> bool:
+        """
+        Send keepalive to prevent connection timeout.
+
+        Override in subclasses that need periodic activity to maintain
+        their connection (e.g., Gemini).
+
+        Returns:
+            True if keepalive succeeded or not needed, False if failed
+        """
+        return True  # Default: no-op, assume connection stays alive
