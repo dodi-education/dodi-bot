@@ -4,33 +4,16 @@
     "auto_detect": false
   },
   "conversation": {
-    "enabled": true,
-    "timeout_seconds": 10.0,
-    "max_turns": 20,
-    "reset_phrases": ["new topic", "start over", "neues thema", "vergiss das", "von vorne"]
+    "timeout_seconds": 30.0
   },
   "persona": {
     "active": "default_de",
     "directory": "personas/"
   },
   "audio": {
-    "volume": 50,
+    "volume": 10,
     "input_device": "seeed-2mic-voicecard",
     "sample_rate": 16000
-  },
-  "wake_word": {
-    "enabled": true,
-    "phrases": ["dod", "der o d", "tode", "okay dod", "du die", "rudi", "hallo dod"]
-  },
-  "stop_words": {
-    "enabled": false,
-    "words": ["stop", "stopp", "be quiet", "shut up", "enough"]
-  },
-  "greeting_words": {
-    "enabled": true,
-    "words": ["hallo", "hallihallo", "guten morgen", "guten tag", "guten abend", "hi", "hey", "servus", "moin"],
-    "prompt_greeting": "Der Nutzer hat dich gerade begrüßt. Begrüße ihn zurück wie in deinen Anweisungen beschrieben.",
-    "prompt_greeting_with_query": "Der Nutzer begrüßt dich und fragt: {query}. Begrüße ihn kurz und beantworte dann seine Frage."
   },
   "streaming": {
     "enabled": true,
@@ -40,7 +23,7 @@
       "voice": "alloy"
     },
     "gemini": {
-      "model": "gemini-2.5-flash-native-audio-preview-12-2025",
+      "model": "gemini-3.1-flash-live-preview",
       "voice": "Leda"
     },
     "grok": {
@@ -48,33 +31,121 @@
       "voice": "Ara"
     }
   },
-  "ai_provider": {
-    "active": "gemini",
-    "gemini": {
-      "model": "gemini-3-flash-preview",
-      "temperature": 0.7,
-      "max_tokens": 512
+  "night_mode": {
+    "enabled": true,
+    "deactivate_sst": true,
+    "display": {
+      "mode": "time",
+      "brightness": 20
     },
-    "openai": {
-      "model": "gpt-4o-mini",
-      "temperature": 0.5,
-      "max_tokens": 512
-    },
-    "grok": {
-      "model": "grok-2",
-      "temperature": 0.7,
-      "max_tokens": 512
+    "schedule": {
+      "Mon": [
+        {
+          "timespan": "22:00-24:00"
+        },
+        {
+          "timespan": "00:00-06:00"
+        }
+      ],
+      "Tue": [
+        {
+          "timespan": "22:00-24:00"
+        },
+        {
+          "timespan": "00:00-06:00"
+        }
+      ],
+      "Wed": [
+        {
+          "timespan": "22:00-24:00"
+        },
+        {
+          "timespan": "00:00-06:00"
+        }
+      ],
+      "Thu": [
+        {
+          "timespan": "22:00-24:00"
+        },
+        {
+          "timespan": "00:00-06:00"
+        }
+      ],
+      "Fri": [
+        {
+          "timespan": "22:00-24:00"
+        },
+        {
+          "timespan": "00:00-06:00"
+        }
+      ],
+      "Sat": [
+        {
+          "timespan": "22:00-24:00"
+        },
+        {
+          "timespan": "00:00-06:00"
+        }
+      ],
+      "Sun": [
+        {
+          "timespan": "22:00-24:00"
+        },
+        {
+          "timespan": "00:00-06:00"
+        }
+      ]
     }
   },
-  "local_models": {
-    "stt": {
-      "engine": "vosk",
-      "model_path": "models/stt/vosk-model-small-de-0.15"
+  "alarm": {
+    "volume": 25,
+    "ascending_volume": {
+      "active": true,
+      "start_volume": 5,
+      "duration": 20
     },
-    "tts": {
-      "engine": "piper",
-      "model_path": "models/tts/de_DE-thorsten-medium.onnx",
-      "voice": "de_DE-thorsten-medium"
+    "stop_alarm_touch": true,
+    "one_time_alarm": {
+      "active": false,
+      "time": "22:44",
+      "audio": "morning.mp3"
+    },
+    "schedule": {
+      "Mon": {
+        "active": true,
+        "time": "06:00",
+        "audio": "morning.mp3"
+      },
+      "Tue": {
+        "active": true,
+        "time": "06:00",
+        "audio": "morning.mp3"
+      },
+      "Wed": {
+        "active": true,
+        "time": "06:00",
+        "audio": "morning.mp3"
+      },
+      "Thu": {
+        "active": true,
+        "time": "08:15",
+        "audio": "morning.mp3"
+      },
+      "Fri": {
+        "active": true,
+        "time": "06:00",
+        "audio": "morning.mp3"
+      },
+      "Sat": {
+        "active": true,
+        "time": "06:15",
+        "audio": "morning.mp3"
+      },
+      "Sun": {
+        "active": false,
+        "time": "08:00",
+        "audio": "morning.mp3"
+      }
     }
   }
 }

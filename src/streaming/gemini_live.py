@@ -2,11 +2,10 @@
 
 import asyncio
 import logging
-import subprocess
 from typing import Optional, Callable
 
 from .provider_base import VoiceStreamingProvider
-from audio.volume import scale_volume
+from audio import AudioOutput
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +43,7 @@ class GeminiLiveProvider(VoiceStreamingProvider):
         self._audio_callback = None
         self._transcript_callback = None
         self._end_callback = None
-        self._aplay_proc = None
+        self._audio_output: Optional[AudioOutput] = None
 
     async def connect(self, system_prompt: Optional[str] = None) -> None:
         """Connect to Gemini Live API."""
@@ -74,11 +73,15 @@ class GeminiLiveProvider(VoiceStreamingProvider):
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     disabled=False,
-                    startOfSpeechSensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
-                    endOfSpeechSensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
-                    silenceDurationMs=1000  # Require 1 second of silence before end
+                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
+                    silence_duration_ms=1000  # Require 1 second of silence before end
                 )
-            )
+            ),
+            # Transcribe both sides. We use these as conversation activity
+            # signals (to drive the inactivity timeout) and for debug logging.
+            input_audio_transcription=types.AudioTranscriptionConfig(),
+            output_audio_transcription=types.AudioTranscriptionConfig(),
         )
 
         if system_prompt:
@@ -106,19 +109,11 @@ class GeminiLiveProvider(VoiceStreamingProvider):
                 pass
             self._receive_task = None
 
-        if self._aplay_proc:
-            # Close stdin to signal end of audio, then wait for playback to finish
-            if self._aplay_proc.stdin:
-                try:
-                    self._aplay_proc.stdin.close()
-                except Exception:
-                    pass
-            # Wait for aplay to finish playing buffered audio (max 5 seconds)
-            try:
-                self._aplay_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._aplay_proc.terminate()
-            self._aplay_proc = None
+        if self._audio_output is not None:
+            # Drop any queued audio and close the stream (immediate stop, e.g.
+            # when the user double-taps to return to DEAF).
+            self._audio_output.stop_stream()
+            self._audio_output = None
 
         if self._session_context:
             try:
@@ -139,14 +134,13 @@ class GeminiLiveProvider(VoiceStreamingProvider):
         try:
             from google.genai import types
 
-            await self._session.send(
-                input=types.LiveClientRealtimeInput(
-                    media_chunks=[
-                        types.Blob(
-                            data=audio_data,
-                            mime_type=f"audio/pcm;rate={self.sample_rate}"
-                        )
-                    ]
+            # Current Live API: stream realtime audio via send_realtime_input.
+            # The old send(input=LiveClientRealtimeInput(media_chunks=...)) path
+            # is deprecated and now rejected with a 1007 protocol error.
+            await self._session.send_realtime_input(
+                audio=types.Blob(
+                    data=audio_data,
+                    mime_type=f"audio/pcm;rate={self.sample_rate}"
                 )
             )
         except Exception as e:
@@ -178,23 +172,35 @@ class GeminiLiveProvider(VoiceStreamingProvider):
         # Start receiving messages
         self._receive_task = asyncio.create_task(self._receive_loop())
 
-        # Start aplay process for audio output
+        # Open the streaming audio output
         self._start_audio_output()
 
+    # Gemini Live streams 24kHz mono 16-bit PCM.
+    OUTPUT_SAMPLE_RATE = 24000
+
     def _start_audio_output(self) -> None:
-        """Start aplay process for audio playback."""
-        # Gemini uses 24kHz output by default
-        self._aplay_proc = subprocess.Popen(
-            ["aplay", "-D", "plughw:1,0", "-f", "S16_LE", "-r", "24000", "-c", "1"],
-            stdin=subprocess.PIPE,
-            stderr=subprocess.DEVNULL
+        """Open the streaming audio output (sounddevice, default device).
+
+        Uses the same hardware path as the night-mode alarm, instead of a
+        hardcoded aplay device which pointed at the wrong sound card.
+        """
+        self._audio_output = AudioOutput(
+            sample_rate=self.OUTPUT_SAMPLE_RATE, volume=self.volume
         )
+        self._audio_output.start_stream(self.OUTPUT_SAMPLE_RATE)
 
     async def _receive_loop(self) -> None:
-        """Background task to receive and process responses."""
+        """Background task to continuously receive and process responses.
+
+        Gemini's ``session.receive()`` generator ends after each
+        ``turn_complete``. For a fluent, native conversation we re-enter it in a
+        loop so the session stays continuous across turns — no per-turn teardown
+        — until the connection drops or we disconnect.
+        """
         try:
-            async for response in self._session.receive():
-                await self._handle_response(response)
+            while self._connected:
+                async for response in self._session.receive():
+                    await self._handle_response(response)
 
         except asyncio.CancelledError:
             # Normal cancellation during disconnect
@@ -226,16 +232,10 @@ class GeminiLiveProvider(VoiceStreamingProvider):
                         if hasattr(part, 'inline_data') and part.inline_data:
                             audio_data = part.inline_data.data
                             if audio_data:
-                                # AI is speaking
+                                # AI is speaking (volume is applied by AudioOutput)
                                 self._set_speaking(True)
-                                # Apply volume scaling
-                                audio_data = scale_volume(audio_data, self.volume)
-                                if self._aplay_proc and self._aplay_proc.stdin:
-                                    try:
-                                        self._aplay_proc.stdin.write(audio_data)
-                                        self._aplay_proc.stdin.flush()
-                                    except BrokenPipeError:
-                                        pass
+                                if self._audio_output is not None:
+                                    self._audio_output.feed_stream(audio_data)
                                 if self._audio_callback:
                                     self._audio_callback(audio_data)
 
@@ -244,9 +244,23 @@ class GeminiLiveProvider(VoiceStreamingProvider):
                             if self._transcript_callback:
                                 self._transcript_callback(part.text)
 
-                # Check for turn complete
+                # Input (user) / output (AI) transcriptions: surface as activity
+                # signals + debug text. Routed through the same transcript callback.
+                in_tx = getattr(server_content, 'input_transcription', None)
+                if in_tx and in_tx.text and self._transcript_callback:
+                    self._transcript_callback(in_tx.text)
+                out_tx = getattr(server_content, 'output_transcription', None)
+                if out_tx and out_tx.text and self._transcript_callback:
+                    self._transcript_callback(out_tx.text)
+
+                # User barge-in: the model's in-progress audio was interrupted.
+                if getattr(server_content, 'interrupted', None):
+                    self._set_speaking(False)
+
+                # Turn complete: the AI finished its turn. In the continuous
+                # model this is NOT end-of-session — the receive loop keeps
+                # running. The callback is only an "AI turn finished" signal.
                 if hasattr(server_content, 'turn_complete') and server_content.turn_complete:
-                    # AI finished speaking
                     self._set_speaking(False)
                     logger.info("Turn complete")
                     if self._end_callback:
@@ -265,10 +279,10 @@ class GeminiLiveProvider(VoiceStreamingProvider):
         self._is_speaking = False
         self._speaking_ended_at = None
 
-        # Clear audio output
-        if self._aplay_proc:
-            self._aplay_proc.terminate()
-            self._start_audio_output()
+        # Drop queued audio and reopen a fresh stream.
+        if self._audio_output is not None:
+            self._audio_output.stop_stream()
+            self._audio_output.start_stream(self.OUTPUT_SAMPLE_RATE)
 
         logger.info("Interrupt requested")
 
@@ -286,14 +300,14 @@ class GeminiLiveProvider(VoiceStreamingProvider):
         try:
             from google.genai import types
 
-            await self._session.send(
-                input=types.LiveClientContent(
-                    turns=[types.Content(
-                        role="user",
-                        parts=[types.Part(text=text)]
-                    )],
-                    turn_complete=True
-                )
+            # Current Live API: turn-based text goes through send_client_content.
+            # The old send(input=LiveClientContent(...)) path is deprecated.
+            await self._session.send_client_content(
+                turns=types.Content(
+                    role="user",
+                    parts=[types.Part(text=text)]
+                ),
+                turn_complete=True
             )
         except Exception as e:
             logger.error(f"Error sending text prompt: {e}")
@@ -347,11 +361,11 @@ class GeminiLiveProvider(VoiceStreamingProvider):
         Signal to Gemini that the user's audio input is complete.
 
         Note: With automatic_activity_detection enabled, Gemini's VAD
-        handles turn detection automatically. Sending LiveClientContent
-        after LiveClientRealtimeInput causes protocol errors (1007).
-        This method is now a no-op.
+        handles turn detection automatically. Mixing turn-based
+        send_client_content into a send_realtime_input audio stream is
+        discouraged by the API, so this method is a no-op.
         """
-        # No-op: Gemini's automatic VAD handles turn detection
-        # Sending LiveClientContent(turn_complete=True) after streaming
-        # audio via LiveClientRealtimeInput causes error 1007
+        # No-op: Gemini's automatic VAD handles turn detection. Interleaving
+        # send_client_content(turn_complete=True) with the realtime audio
+        # stream is not recommended and can break turn-taking.
         logger.debug("commit_audio called (no-op with automatic VAD)")

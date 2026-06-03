@@ -1,11 +1,5 @@
-"""Conversation management for multi-turn conversations."""
+"""Conversation state for DODI's two-mode (DEAF/NORMAL) control loop."""
 
-from .history import ConversationHistory, ConversationMessage
-from .session import ConversationSession, SessionState
+from .session import InactivityTimer, Mode
 
-__all__ = [
-    "ConversationHistory",
-    "ConversationMessage",
-    "ConversationSession",
-    "SessionState",
-]
+__all__ = ["InactivityTimer", "Mode"]
