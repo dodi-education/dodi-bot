@@ -37,3 +37,6 @@ temp/
 
 # Audio recordings (if any)
 recordings/
+
+# Large audio asset (not uploaded to GitHub)
+assets/audio/morning.mp3
