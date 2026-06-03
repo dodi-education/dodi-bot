@@ -11,14 +11,17 @@ pyaudio>=0.2.14
 sounddevice>=0.4.6
 numpy>=1.24.0
 
-# Local AI Models
-vosk>=0.3.45
-piper-tts>=1.2.0
-
-# Cloud AI Providers
+# Cloud AI Providers (native live conversation)
 google-genai>=1.0.0
 openai>=1.30.0
 httpx>=0.27.0
+
+# Display (Round DSI Screen Avatar)
+pygame>=2.5.0
+
+# Alarm audio decoding (mp3/ogg/flac/m4a via ffmpeg)
+pydub>=0.25.0
+audioop-lts>=0.2.1; python_version >= "3.13"
 
 # Configuration & Utilities
 python-dotenv>=1.0.0

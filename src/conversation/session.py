@@ -1,121 +1,61 @@
-"""Conversation session management for active mode control."""
+"""Two-mode operating state for DODI.
+
+The bot has exactly two modes:
+
+* ``DEAF``   — microphone off (privacy default). The avatar wears headphones.
+* ``NORMAL`` — microphone on, streaming a live conversation to the AI provider.
+
+A double-tap on the screen toggles between them; an inactivity timeout drops
+NORMAL back to DEAF automatically.
+"""
 
 import time
 from enum import Enum
-from typing import Optional
-
-from .history import ConversationHistory
+from typing import Callable, Optional
 
 
-class SessionState(Enum):
-    """States of the conversation session."""
-    PASSIVE = "passive"              # Wake word listening only
-    ACTIVE_LISTENING = "listening"   # Active, listening for user speech
-    ACTIVE_PROCESSING = "processing" # Processing user input with AI
-    ACTIVE_SPEAKING = "speaking"     # AI is speaking response
-    ACTIVE_WAITING = "waiting"       # Post-response, awaiting follow-up
+class Mode(Enum):
+    """Top-level operating mode."""
+    DEAF = "deaf"
+    NORMAL = "normal"
 
 
-class ConversationSession:
-    """Manages a conversation session including state and history.
+class InactivityTimer:
+    """Counts down from the last activity; drives the auto-return to DEAF.
 
-    A session starts when a wake word is detected and ends when:
-    - The timeout expires without user speech
-    - A stop word is detected
-    - The session is explicitly deactivated
+    Conversation activity (user or AI speech) calls :meth:`mark`. Once more than
+    ``timeout_seconds`` elapse without a ``mark``, :meth:`expired` returns True.
+    The clock is injectable so the timer can be unit-tested without sleeping.
     """
 
-    def __init__(self, timeout_seconds: float = 10.0, max_turns: int = 20):
-        """Initialize a conversation session.
+    def __init__(
+        self,
+        timeout_seconds: float,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self.timeout_seconds = timeout_seconds
+        self._clock = clock
+        self._last_activity: Optional[float] = None
 
-        Args:
-            timeout_seconds: Seconds to wait for follow-up after AI response
-            max_turns: Maximum conversation turns to retain in history
+    def mark(self) -> None:
+        """Record activity now (restart the countdown)."""
+        self._last_activity = self._clock()
+
+    def clear(self) -> None:
+        """Stop the countdown until the next :meth:`mark`."""
+        self._last_activity = None
+
+    def expired(self) -> bool:
+        """True once ``timeout_seconds`` have elapsed since the last activity.
+
+        Returns False while the timer is cleared (never started).
         """
-        self._timeout_seconds = timeout_seconds
-        self._timeout_start: Optional[float] = None
-        self._state = SessionState.PASSIVE
-        self.history = ConversationHistory(max_turns=max_turns)
-
-    @property
-    def state(self) -> SessionState:
-        """Get current session state."""
-        return self._state
-
-    @state.setter
-    def state(self, new_state: SessionState) -> None:
-        """Set session state."""
-        self._state = new_state
-
-    @property
-    def timeout_seconds(self) -> float:
-        """Get the timeout duration."""
-        return self._timeout_seconds
-
-    @timeout_seconds.setter
-    def timeout_seconds(self, value: float) -> None:
-        """Set the timeout duration."""
-        self._timeout_seconds = max(0.0, value)
-
-    def activate(self) -> None:
-        """Activate the session (switch from passive to active listening)."""
-        self._state = SessionState.ACTIVE_LISTENING
-        self._timeout_start = None
-
-    def deactivate(self) -> None:
-        """Deactivate the session and clear history."""
-        self._state = SessionState.PASSIVE
-        self._timeout_start = None
-        self.history.clear()
-
-    def set_listening(self) -> None:
-        """Set state to active listening."""
-        self._state = SessionState.ACTIVE_LISTENING
-        self.cancel_timeout()
-
-    def set_processing(self) -> None:
-        """Set state to processing."""
-        self._state = SessionState.ACTIVE_PROCESSING
-
-    def set_speaking(self) -> None:
-        """Set state to speaking."""
-        self._state = SessionState.ACTIVE_SPEAKING
-
-    def set_waiting(self) -> None:
-        """Set state to waiting for follow-up and start timeout."""
-        self._state = SessionState.ACTIVE_WAITING
-        self.start_timeout()
-
-    def start_timeout(self) -> None:
-        """Start the post-response timeout timer."""
-        self._timeout_start = time.time()
-
-    def cancel_timeout(self) -> None:
-        """Cancel the timeout timer (user started speaking)."""
-        self._timeout_start = None
-
-    def is_timeout_expired(self) -> bool:
-        """Check if the timeout has expired."""
-        if self._timeout_start is None:
+        if self._last_activity is None:
             return False
-        return time.time() - self._timeout_start >= self._timeout_seconds
+        return self._clock() - self._last_activity >= self.timeout_seconds
 
-    def time_remaining(self) -> float:
-        """Get seconds remaining before timeout expires.
-
-        Returns:
-            Seconds remaining, or full timeout if not started
-        """
-        if self._timeout_start is None:
-            return self._timeout_seconds
-        elapsed = time.time() - self._timeout_start
-        return max(0.0, self._timeout_seconds - elapsed)
-
-    def reset_conversation(self) -> None:
-        """Clear conversation history but stay in active mode."""
-        self.history.clear()
-        # Stay active - don't change state
-
-    def is_active(self) -> bool:
-        """Check if session is in any active state."""
-        return self._state != SessionState.PASSIVE
+    def remaining(self) -> float:
+        """Seconds left before expiry (full timeout while cleared)."""
+        if self._last_activity is None:
+            return self.timeout_seconds
+        return max(0.0, self.timeout_seconds - (self._clock() - self._last_activity))

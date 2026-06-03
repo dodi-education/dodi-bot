@@ -29,21 +29,8 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Model URLs
-VOSK_MODEL_URL="https://alphacephei.com/vosk/models/vosk-model-small-de-0.15.zip"
-VOSK_MODEL_NAME="vosk-model-small-de-0.15"
-# Piper binary (standalone, includes phonemizer - works on ARM64)
-PIPER_BINARY_URL="https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_aarch64.tar.gz"
-PIPER_BINARY_NAME="piper"
-# Piper voices are hosted on Hugging Face
-# English voice
-PIPER_VOICE_EN_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx"
-PIPER_VOICE_EN_JSON_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json"
-PIPER_VOICE_EN_NAME="en_US-lessac-medium"
-# German voice (Thorsten Medium - natural sounding)
-PIPER_VOICE_DE_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx"
-PIPER_VOICE_DE_JSON_URL="https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx.json"
-PIPER_VOICE_DE_NAME="de_DE-thorsten-medium"
+# No local AI models are needed: DODI uses a native cloud live-conversation
+# provider (e.g. Gemini Live) for both speech recognition and speech synthesis.
 
 # Default values
 PROVIDER=""
@@ -300,6 +287,8 @@ PACKAGES=(
     "dkms"
     "espeak-ng"
     "libespeak-ng-dev"
+    "ffmpeg"
+    "libsdl2-ttf-dev"
 )
 
 # Kernel headers (needed for seeed-voicecard driver compilation)
@@ -356,6 +345,23 @@ else
         echo -e "  [+] $pkg (installed)"
     done
     echo -e "${GREEN}[OK]${NC} System dependencies installed"
+fi
+echo ""
+
+# Backlight bl_power is root-only by default; night-mode needs the `pi`
+# user (group `video`, same group that already owns `brightness`) to be able
+# to toggle it. Without this, brightness=0 puts the panel into power-save
+# and the screen can't be woken when the alarm fires.
+BACKLIGHT_RULE="/etc/udev/rules.d/99-backlight-power.rules"
+BACKLIGHT_RULE_CONTENT='SUBSYSTEM=="backlight", ACTION=="add|change", RUN+="/bin/chgrp video /sys%p/bl_power", RUN+="/bin/chmod g+w /sys%p/bl_power"'
+if [ ! -f "$BACKLIGHT_RULE" ] || ! grep -qF "$BACKLIGHT_RULE_CONTENT" "$BACKLIGHT_RULE"; then
+    echo -e "  [~] Installing backlight udev rule..."
+    echo "$BACKLIGHT_RULE_CONTENT" > "$BACKLIGHT_RULE"
+    udevadm control --reload 2>/dev/null || true
+    udevadm trigger --subsystem-match=backlight --action=change 2>/dev/null || true
+    echo -e "  [+] Backlight bl_power now writable by group video"
+else
+    echo -e "  [+] Backlight udev rule already present"
 fi
 echo ""
 
@@ -619,7 +625,7 @@ echo -e "${BLUE}[5/7] Installing Python dependencies...${NC}"
 
 # Check if key packages are already installed to skip slow pip install
 # These are the slowest/most important packages from requirements.txt
-KEY_PACKAGES=("vosk" "pyaudio" "piper" "google.genai")
+KEY_PACKAGES=("pyaudio" "sounddevice" "google.genai")
 PACKAGES_MISSING=false
 
 for pkg in "${KEY_PACKAGES[@]}"; do
@@ -636,174 +642,50 @@ if [ "$PACKAGES_MISSING" = true ]; then
 else
     echo -e "${GREEN}[OK]${NC} Python dependencies already installed"
 fi
+
+# pygame builds from source on Python 3.13 arm64 and silently skips the
+# `font` extension if libsdl2-ttf-dev wasn't present at build time. The
+# WARNING from pygame.font.init() is caught in avatar.py, so the clock face
+# renders blank-on-blank — looks like "display dead" on the alarm. Detect
+# that case and force a rebuild against the now-installed headers.
+if ! "$VENV_DIR/bin/python" -c "import pygame.font" 2>/dev/null; then
+    echo -e "  [~] pygame.font missing (built without libsdl2-ttf-dev); rebuilding pygame..."
+    pip install --force-reinstall --no-cache-dir --no-binary :all: 'pygame>=2.5.0' -qq
+    echo -e "  [+] pygame rebuilt with font support"
+fi
 echo ""
 
 # ============================================
-# Step 6: Download Local AI Models
+# Step 6: Local AI Models (none required) + UI fonts
 # ============================================
-if [ "$SKIP_MODELS" = true ]; then
-    echo -e "${BLUE}[6/7] Skipping local AI models (--skip-models)${NC}"
+echo -e "${BLUE}[6/7] Local AI models...${NC}"
+echo -e "  ${GREEN}[+]${NC} None needed — DODI uses a cloud live-conversation provider"
+
+# The alarm UI uses the Nunito font. The TTFs are committed to assets/fonts/;
+# this is just a safety net for partial checkouts (idempotent).
+FONTS_DIR="$PROJECT_DIR/assets/fonts"
+if ls "$FONTS_DIR"/Nunito-*.ttf >/dev/null 2>&1; then
+    echo -e "  ${GREEN}[+]${NC} Nunito fonts present"
 else
-    echo -e "${BLUE}[6/7] Downloading local AI models...${NC}"
-
-    # Create model directories
-    mkdir -p "$PROJECT_DIR/models/stt"
-    mkdir -p "$PROJECT_DIR/models/tts"
-
-    # Helper function for downloading with progress
-    download_with_progress() {
-        local url="$1"
-        local output="$2"
-        local description="$3"
-
-        echo -ne "  [~] Downloading $description... "
-
-        # Try wget first (follows redirects with -L flag for GitHub/HuggingFace)
-        if command -v wget &>/dev/null; then
-            if wget --timeout=120 --tries=3 -q -L "$url" -O "$output" 2>/dev/null; then
-                # Verify file was actually downloaded (not empty or HTML error)
-                if [ -s "$output" ] && ! head -c 100 "$output" | grep -qi "<!DOCTYPE\|<html"; then
-                    echo -e "${GREEN}done${NC}"
-                    return 0
-                fi
-            fi
-        fi
-
-        # Fallback to curl
-        if command -v curl &>/dev/null; then
-            rm -f "$output" 2>/dev/null
-            if curl -fSL --connect-timeout 30 --max-time 300 -o "$output" "$url" 2>/dev/null; then
-                if [ -s "$output" ] && ! head -c 100 "$output" | grep -qi "<!DOCTYPE\|<html"; then
-                    echo -e "${GREEN}done${NC}"
-                    return 0
-                fi
-            fi
-        fi
-
-        rm -f "$output" 2>/dev/null
-        echo -e "${RED}failed${NC}"
-        return 1
-    }
-
-    # Download Vosk STT model
-    STT_MODEL_DIR="$PROJECT_DIR/models/stt/$VOSK_MODEL_NAME"
-    if [ -d "$STT_MODEL_DIR" ]; then
-        echo -e "  ${GREEN}[+]${NC} Vosk STT model already downloaded"
+    echo -e "  [~] Fetching Nunito fonts..."
+    mkdir -p "$FONTS_DIR"
+    if curl -sL --max-time 60 -o /tmp/nunito.zip \
+        "https://gwfh.mranftl.com/api/fonts/nunito?download=zip&subsets=latin&variants=regular,700,800,900&formats=ttf" \
+        && file /tmp/nunito.zip | grep -qi "zip archive"; then
+        "$VENV_DIR/bin/python" - "$FONTS_DIR" <<'PY'
+import sys, zipfile
+zf = zipfile.ZipFile("/tmp/nunito.zip")
+zf.extractall(sys.argv[1])
+PY
+        ( cd "$FONTS_DIR" \
+          && mv -f nunito-v32-latin-regular.ttf Nunito-Regular.ttf 2>/dev/null \
+          && mv -f nunito-v32-latin-700.ttf Nunito-Bold.ttf 2>/dev/null \
+          && mv -f nunito-v32-latin-800.ttf Nunito-ExtraBold.ttf 2>/dev/null \
+          && mv -f nunito-v32-latin-900.ttf Nunito-Black.ttf 2>/dev/null )
+        rm -f /tmp/nunito.zip
+        echo -e "  ${GREEN}[+]${NC} Nunito fonts installed"
     else
-        cd "$PROJECT_DIR/models/stt"
-        if download_with_progress "$VOSK_MODEL_URL" "model.zip" "Vosk STT model (~40MB)"; then
-            echo -ne "  [~] Extracting... "
-            if unzip -q model.zip 2>/dev/null; then
-                rm -f model.zip
-                echo -e "${GREEN}done${NC}"
-                echo -e "  ${GREEN}[+]${NC} Vosk STT model installed"
-            else
-                echo -e "${RED}failed${NC}"
-                rm -f model.zip
-            fi
-        fi
-    fi
-
-    # Download Piper binary (standalone, includes phonemizer for ARM64)
-    PIPER_INSTALL_DIR="/usr/local/bin"
-    PIPER_LIB_DIR="/usr/local/lib/piper"
-    if [ -f "$PIPER_INSTALL_DIR/piper" ] && [ -d "$PIPER_LIB_DIR" ]; then
-        echo -e "  ${GREEN}[+]${NC} Piper binary already installed"
-    else
-        cd "$PROJECT_DIR/models"
-        if download_with_progress "$PIPER_BINARY_URL" "piper.tar.gz" "Piper binary (~30MB)"; then
-            echo -ne "  [~] Installing piper binary... "
-            if tar -xzf piper.tar.gz 2>/dev/null; then
-                # Install binary to /usr/local/bin
-                cp piper/piper "$PIPER_INSTALL_DIR/"
-                chmod +x "$PIPER_INSTALL_DIR/piper"
-
-                # Install shared libraries to dedicated directory
-                mkdir -p "$PIPER_LIB_DIR"
-                cp piper/lib*.so* "$PIPER_LIB_DIR/" 2>/dev/null || cp piper/*.so* "$PIPER_LIB_DIR/" 2>/dev/null || true
-
-                # Copy espeak-ng data that piper needs
-                mkdir -p /usr/local/share/piper
-                cp -r piper/espeak-ng-data /usr/local/share/piper/ 2>/dev/null || true
-
-                # Add piper lib directory to ldconfig
-                echo "$PIPER_LIB_DIR" > /etc/ld.so.conf.d/piper.conf
-                ldconfig
-
-                rm -rf piper piper.tar.gz
-                echo -e "${GREEN}done${NC}"
-                echo -e "  ${GREEN}[+]${NC} Piper binary installed to $PIPER_INSTALL_DIR/piper"
-            else
-                echo -e "${RED}failed${NC}"
-                rm -f piper.tar.gz
-            fi
-        fi
-    fi
-
-    # Download Piper TTS voices (model + config from Hugging Face)
-    TTS_MODEL_DIR="$PROJECT_DIR/models/tts"
-    cd "$TTS_MODEL_DIR"
-
-    # Download English voice
-    if [ -f "$TTS_MODEL_DIR/$PIPER_VOICE_EN_NAME.onnx" ] && [ -f "$TTS_MODEL_DIR/$PIPER_VOICE_EN_NAME.onnx.json" ]; then
-        echo -e "  ${GREEN}[+]${NC} Piper English voice already downloaded"
-    else
-        PIPER_EN_OK=true
-        if [ ! -f "$PIPER_VOICE_EN_NAME.onnx" ]; then
-            if ! download_with_progress "$PIPER_VOICE_EN_URL" "$PIPER_VOICE_EN_NAME.onnx" "Piper English voice (~65MB)"; then
-                PIPER_EN_OK=false
-            fi
-        fi
-        if [ ! -f "$PIPER_VOICE_EN_NAME.onnx.json" ]; then
-            if ! download_with_progress "$PIPER_VOICE_EN_JSON_URL" "$PIPER_VOICE_EN_NAME.onnx.json" "Piper English config"; then
-                PIPER_EN_OK=false
-            fi
-        fi
-        if [ "$PIPER_EN_OK" = true ]; then
-            echo -e "  ${GREEN}[+]${NC} Piper English voice installed"
-        else
-            echo -e "  ${RED}[!]${NC} Piper English voice download failed"
-        fi
-    fi
-
-    # Download German voice (Thorsten High)
-    if [ -f "$TTS_MODEL_DIR/$PIPER_VOICE_DE_NAME.onnx" ] && [ -f "$TTS_MODEL_DIR/$PIPER_VOICE_DE_NAME.onnx.json" ]; then
-        echo -e "  ${GREEN}[+]${NC} Piper German voice already downloaded"
-    else
-        PIPER_DE_OK=true
-        if [ ! -f "$PIPER_VOICE_DE_NAME.onnx" ]; then
-            if ! download_with_progress "$PIPER_VOICE_DE_URL" "$PIPER_VOICE_DE_NAME.onnx" "Piper German voice (~100MB)"; then
-                PIPER_DE_OK=false
-            fi
-        fi
-        if [ ! -f "$PIPER_VOICE_DE_NAME.onnx.json" ]; then
-            if ! download_with_progress "$PIPER_VOICE_DE_JSON_URL" "$PIPER_VOICE_DE_NAME.onnx.json" "Piper German config"; then
-                PIPER_DE_OK=false
-            fi
-        fi
-        if [ "$PIPER_DE_OK" = true ]; then
-            echo -e "  ${GREEN}[+]${NC} Piper German voice installed"
-        else
-            echo -e "  ${RED}[!]${NC} Piper German voice download failed"
-        fi
-    fi
-
-    cd "$PROJECT_DIR"
-
-    # Verify models and binary were downloaded
-    MODELS_OK=true
-    [ ! -d "$PROJECT_DIR/models/stt/$VOSK_MODEL_NAME" ] && MODELS_OK=false
-    [ ! -f "$PROJECT_DIR/models/tts/$PIPER_VOICE_EN_NAME.onnx" ] && MODELS_OK=false
-    [ ! -f "$PROJECT_DIR/models/tts/$PIPER_VOICE_DE_NAME.onnx" ] && MODELS_OK=false
-    [ ! -f "/usr/local/bin/piper" ] && MODELS_OK=false
-    [ ! -d "/usr/local/lib/piper" ] && MODELS_OK=false
-
-    if [ "$MODELS_OK" = true ]; then
-        echo -e "${GREEN}[OK]${NC} Local AI models and Piper binary ready"
-    elif [ -d "$PROJECT_DIR/models/stt/$VOSK_MODEL_NAME" ] || [ -f "$PROJECT_DIR/models/tts/$PIPER_VOICE_EN_NAME.onnx" ] || [ -f "/usr/local/bin/piper" ]; then
-        echo -e "${YELLOW}[!]${NC} Some components failed to download (check errors above)"
-    else
-        echo -e "${RED}[!]${NC} Failed to download models and Piper binary"
+        echo -e "  ${YELLOW}[!]${NC} Could not fetch Nunito (UI will fall back to a system font)"
     fi
 fi
 echo ""
@@ -961,45 +843,7 @@ done
 echo ""
 echo -e "${CYAN}AI Models:${NC}"
 echo "  --------------------------------  ------   --------"
-
-if [ "$SKIP_MODELS" = true ]; then
-    print_status "Vosk STT model" "warn" "Skipped (--skip-models)"
-    print_status "Piper binary" "warn" "Skipped (--skip-models)"
-    print_status "Piper English voice" "warn" "Skipped (--skip-models)"
-    print_status "Piper German voice" "warn" "Skipped (--skip-models)"
-else
-    # Check STT model
-    if [ -d "$PROJECT_DIR/models/stt/$VOSK_MODEL_NAME" ]; then
-        model_size=$(du -sh "$PROJECT_DIR/models/stt/$VOSK_MODEL_NAME" 2>/dev/null | cut -f1)
-        print_status "Vosk STT model" "ok" "$VOSK_MODEL_NAME ($model_size)"
-    else
-        print_status "Vosk STT model" "fail" "Not downloaded"
-    fi
-
-    # Check Piper binary
-    if [ -f "/usr/local/bin/piper" ]; then
-        piper_ver=$(/usr/local/bin/piper --version 2>&1 | head -1 || echo "installed")
-        print_status "Piper binary" "ok" "$piper_ver"
-    else
-        print_status "Piper binary" "fail" "Not installed"
-    fi
-
-    # Check English TTS voice
-    if [ -f "$PROJECT_DIR/models/tts/$PIPER_VOICE_EN_NAME.onnx" ]; then
-        model_size=$(du -sh "$PROJECT_DIR/models/tts/$PIPER_VOICE_EN_NAME.onnx" 2>/dev/null | cut -f1)
-        print_status "Piper English voice" "ok" "$PIPER_VOICE_EN_NAME ($model_size)"
-    else
-        print_status "Piper English voice" "fail" "Not downloaded"
-    fi
-
-    # Check German TTS voice
-    if [ -f "$PROJECT_DIR/models/tts/$PIPER_VOICE_DE_NAME.onnx" ]; then
-        model_size=$(du -sh "$PROJECT_DIR/models/tts/$PIPER_VOICE_DE_NAME.onnx" 2>/dev/null | cut -f1)
-        print_status "Piper German voice" "ok" "$PIPER_VOICE_DE_NAME ($model_size)"
-    else
-        print_status "Piper German voice" "fail" "Not downloaded"
-    fi
-fi
+print_status "Local models" "ok" "None needed (cloud live conversation)"
 
 echo ""
 echo -e "${CYAN}Configuration:${NC}"

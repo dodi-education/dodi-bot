@@ -65,9 +65,11 @@ The script will:
 - Install Seeed Voice Card audio driver (if not present)
 - Create a Python virtual environment
 - Install Python dependencies
-- Download local AI models (Vosk STT, Piper TTS)
 - Configure `.env` with your API key
 - Set the active provider in `settings.json`
+
+No local AI models are downloaded — DODI uses a cloud live-conversation
+provider (e.g. Gemini Live) for both speech recognition and speech synthesis.
 
 **Note:** If the audio driver is installed, a reboot is required.
 
@@ -80,10 +82,11 @@ nano config/settings.json
 ```
 
 Key settings:
-- `ai_provider.active`: AI provider (set during install)
+- `streaming.active`: Live provider (set during install): `gemini`, `openai`, `grok`
+- `streaming.<provider>.model` / `.voice`: Model and voice for the live conversation
 - `language.code`: Set language (e.g., "en-US", "de-DE")
 - `persona.active`: Choose persona ("default", "teacher", "storyteller")
-- `wake_word.phrase`: Change wake phrase (default: "hey dodi")
+- `conversation.timeout_seconds`: Idle seconds before DODI returns to DEAF mode
 
 To change your API key later, edit the `.env` file:
 ```bash
@@ -97,15 +100,28 @@ source venv/bin/activate
 python src/main.py
 ```
 
+## How DODI Works
+
+DODI has two modes, and the **microphone is off by default** for privacy:
+
+- **DEAF** (default at startup): the mic is fully off. The avatar wears
+  headphones to show it can't hear.
+- **NORMAL**: the mic is on and audio streams to/from the live AI provider for a
+  natural, full-duplex conversation (the provider handles turn-taking).
+
+**Double-tap the screen** to switch:
+- DEAF → NORMAL: mic on, connect, start talking.
+- NORMAL → DEAF: immediately disconnect and turn the mic off.
+
+In NORMAL mode, after `conversation.timeout_seconds` of inactivity (no one
+speaking), DODI automatically returns to DEAF.
+
 ## Project Structure
 
 ```
 dodi/
 ├── config/
 │   └── settings.json         # Main configuration
-├── models/
-│   ├── stt/                   # Speech-to-Text models (Vosk)
-│   └── tts/                   # Text-to-Speech models (Piper)
 ├── personas/
 │   ├── default.txt            # Default personality
 │   ├── teacher.txt            # Educational mode
@@ -113,13 +129,17 @@ dodi/
 ├── scripts/
 │   └── install.sh             # Installation script
 ├── src/
-│   ├── ai/                    # AI provider implementations
+│   ├── audio/                 # Microphone capture + playback
+│   ├── conversation/          # Two-mode (DEAF/NORMAL) state + inactivity timer
+│   ├── display/               # Round-screen avatar (pygame), double-tap input
+│   ├── night_mode/            # Scheduled clock/alarm display
+│   ├── streaming/             # Live conversation providers
 │   │   ├── provider_base.py   # Abstract base class
-│   │   ├── gemini_provider.py # Google Gemini
-│   │   ├── openai_provider.py # OpenAI ChatGPT
-│   │   ├── grok_provider.py   # xAI Grok
+│   │   ├── gemini_live.py     # Google Gemini Live
+│   │   ├── openai_realtime.py # OpenAI Realtime
+│   │   ├── grok_realtime.py   # xAI Grok
 │   │   └── factory.py         # Provider factory
-│   └── main.py                # Application entry point
+│   └── main.py                # Application entry point + control loop
 ├── venv/                      # Python virtual environment
 ├── .env                       # API keys (not in git)
 ├── .env.example               # API key template
@@ -128,22 +148,17 @@ dodi/
 
 ## AI Providers
 
-DODI supports multiple AI providers. Configure in `settings.json`:
+DODI streams a live voice conversation to one of these providers. Configure the
+active one under `streaming` in `settings.json`:
 
-| Provider | Model | API Key Variable | Notes |
-|----------|-------|------------------|-------|
-| Gemini | gemini-2.0-flash | `GEMINI_API_KEY` | Free tier available |
-| OpenAI | gpt-4o-mini | `OPENAI_API_KEY` | Most widely used |
-| Grok | grok-2 | `GROK_API_KEY` | xAI's model |
+| Provider | API Key Variable | Notes |
+|----------|------------------|-------|
+| Gemini Live | `GEMINI_API_KEY` | Default; free tier available |
+| OpenAI Realtime | `OPENAI_API_KEY` | Most widely used |
+| Grok | `GROK_API_KEY` | xAI's model |
 
-## Local Models
-
-DODI uses local models for voice processing (no cloud required):
-
-- **Speech-to-Text:** Vosk (lightweight, offline)
-- **Text-to-Speech:** Piper (natural voices, fast)
-
-Models are downloaded automatically by the install script.
+The provider handles speech recognition, the model, and speech synthesis in one
+streaming session — there are no local STT/TTS models.
 
 ## Personas
 
@@ -179,36 +194,27 @@ VOICE STYLE:
 ```json
 {
   "language": {
-    "code": "en-US",        // Language code
-    "auto_detect": false    // Auto-detect language (saves bandwidth if false)
+    "code": "de",           // Language code
+    "auto_detect": false
   },
-  "ai_provider": {
-    "active": "gemini",     // Active provider: gemini, openai, grok
-    "gemini": { ... },
-    "openai": { ... },
-    "grok": { ... }
-  },
-  "local_models": {
-    "stt": {
-      "engine": "vosk",
-      "model_path": "models/stt/vosk-model-small-en-us-0.15"
-    },
-    "tts": {
-      "engine": "piper",
-      "model_path": "models/tts/en_US-lessac-medium.onnx"
-    }
+  "conversation": {
+    "timeout_seconds": 10.0  // Idle seconds in NORMAL before returning to DEAF
   },
   "persona": {
-    "active": "default",    // Active persona name
+    "active": "default_de", // Active persona name
     "directory": "personas/"
   },
   "audio": {
-    "volume": 80,           // Output volume (0-100)
-    "sample_rate": 16000    // Audio sample rate
+    "volume": 50,           // Output volume (0-100)
+    "input_device": "seeed-2mic-voicecard",
+    "sample_rate": 16000
   },
-  "wake_word": {
+  "streaming": {
     "enabled": true,
-    "phrase": "hey dodi"
+    "active": "gemini",     // Live provider: gemini, openai, grok
+    "gemini": { "model": "gemini-3.1-flash-live-preview", "voice": "Leda" },
+    "openai": { "model": "gpt-realtime", "voice": "alloy" },
+    "grok":   { "model": "grok-4-voice", "voice": "Ara" }
   }
 }
 ```
@@ -245,7 +251,7 @@ VOICE STYLE:
 3. Test with:
    ```bash
    source venv/bin/activate
-   python -c "from src.ai import create_provider; print('OK')"
+   python -c "import sys; sys.path.insert(0, 'src'); from streaming.factory import is_provider_available; print('gemini key set:', is_provider_available('gemini'))"
    ```
 
 ### Import errors
