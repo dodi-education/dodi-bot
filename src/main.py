@@ -19,6 +19,7 @@ import signal
 import logging
 import argparse
 import asyncio
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -95,6 +96,14 @@ class DODI:
         conversation_config = settings.get("conversation", {})
         self.active_timeout = conversation_config.get("timeout_seconds", 10.0)
 
+        # Idle display-off (power_options). null/None => disabled in that context.
+        power_cfg = settings.get("power_options", {})
+        self._turn_off_day = power_cfg.get("turn_off_display")             # None | seconds
+        self._turn_off_night = power_cfg.get("turn_off_display_night_mode")  # None | seconds
+        self._last_interaction = time.monotonic()
+        self._display_off = False
+        self._display_context = "day"  # "day" | "night" | "alarm" | "settings"
+
         # Runtime state
         self._mode = Mode.DEAF
         self._timer = InactivityTimer(self.active_timeout)
@@ -128,6 +137,47 @@ class DODI:
             self._audio_output = AudioOutput(volume=self.volume)
         return self._audio_output
 
+    def apply_setting(self, key: str, value) -> None:
+        """Live-apply a change from the system settings UI.
+
+        The UI has already written ``value`` into the shared settings dict and saved
+        it; this makes the *running* app honor it immediately for the keys that would
+        otherwise only take effect on restart. Keys not handled here need no live hook
+        (they are re-read from the dict when next used). Always best-effort.
+        """
+        try:
+            if key == "audio.volume":
+                v = int(value)
+                self.volume = v
+                if self._audio_output is not None:
+                    self._audio_output.volume = v
+                if self._provider is not None:
+                    # Affects the openai path immediately; gemini's per-session output
+                    # picks it up on the next activation (fine for a slider).
+                    try:
+                        self._provider.volume = v
+                    except Exception:
+                        pass
+            elif key == "power_options.turn_off_display":
+                self._turn_off_day = value            # None | seconds; read each tick
+            elif key == "power_options.turn_off_display_night_mode":
+                self._turn_off_night = value
+            elif key == "night_mode.display.brightness":
+                mgr = self._night_mode
+                if mgr is not None:
+                    mgr._brightness = int(value)
+                    mgr.reapply_display()             # no-op unless a night session is active
+            elif key == "night_mode.schedule":
+                mgr = self._night_mode
+                if mgr is not None:
+                    mgr._schedule = value             # _run re-reads it within <=60s
+            elif key == "night_mode.enabled":
+                mgr = self._night_mode
+                if mgr is not None:
+                    mgr.set_enabled(bool(value))      # live start/stop of the scheduler
+        except Exception as e:
+            logger.warning(f"apply_setting({key!r}) failed: {e}")
+
     def load_persona(self) -> str:
         """Load the active persona text (used as the AI system prompt)."""
         if self._persona:
@@ -153,15 +203,20 @@ class DODI:
 
     # ------------------------------------------------------- activity signals
 
+    def _mark_activity(self) -> None:
+        """Record voice activity: feeds both the DEAF timeout and display-idle."""
+        self._timer.mark()
+        self._last_interaction = time.monotonic()
+
     def _on_transcript(self, text: str) -> None:
         """Any transcript (user or AI) counts as conversation activity."""
-        self._timer.mark()
+        self._mark_activity()
         if self.debug and text.strip():
             print(f"[transcript] {text}")
 
     def _on_turn_end(self) -> None:
         """The AI finished a turn — recent activity, keep the session alive."""
-        self._timer.mark()
+        self._mark_activity()
 
     # ----------------------------------------------------------- mode changes
 
@@ -203,7 +258,7 @@ class DODI:
 
         self._provider = provider
         self._mode = Mode.NORMAL
-        self._timer.mark()
+        self._mark_activity()
         if self._avatar is not None:
             self._avatar.set_deaf(False)
         print("[DODI] NORMAL mode — talk to me. Double-tap to stop.")
@@ -247,7 +302,7 @@ class DODI:
         # The AI actively speaking keeps the session alive (don't time out in
         # the middle of a response).
         if provider.is_speaking:
-            self._timer.mark()
+            self._mark_activity()
 
         # Read one mic chunk without blocking the event loop (so the receive
         # task and audio playback keep running).
@@ -279,6 +334,85 @@ class DODI:
                 self._night_mode.reapply_display()
         except Exception as e:
             logger.warning(f"Settings backlight error: {e}")
+
+    def _tick_display_power(self) -> None:
+        """Idle display-off: park the screen after no interaction, wake on touch.
+
+        Runs every control-loop iteration (including while night/alarm preempt the
+        loop). Voice activity resets the countdown via :meth:`_mark_activity`; a
+        parked screen is woken only by a touch (audio is never touched here).
+        """
+        av = self._avatar
+        if av is None:
+            return
+        now = time.monotonic()
+
+        # A screen tap is interaction — and the only thing that wakes a park.
+        touched = av.interaction_event.is_set()
+        if touched:
+            av.interaction_event.clear()
+            self._last_interaction = now
+
+        alarm_ringing = self._alarm is not None and self._alarm.is_ringing()
+        settings_open = av.settings_active
+        night = self._night_mode is not None and self._night_mode.is_active()
+        context = ("alarm" if alarm_ringing else
+                   "settings" if settings_open else
+                   "night" if night else "day")
+
+        # Ownership handoff (night ends, alarm starts, …): un-park if needed and
+        # restart the countdown fresh for the new context.
+        if context != self._display_context:
+            self._display_context = context
+            self._last_interaction = now
+            if self._display_off:
+                self._wake_display(night)
+
+        # The alarm and settings overlay own the screen outright; never park
+        # beneath them (they manage their own mode/brightness).
+        if alarm_ringing or settings_open:
+            self._last_interaction = now
+            return
+
+        timeout = self._turn_off_night if night else self._turn_off_day
+
+        if self._display_off:
+            if touched:  # touch-only wake
+                self._wake_display(night)
+            return
+
+        if timeout is None:  # disabled in this context
+            return
+
+        if now - self._last_interaction >= timeout:
+            self._sleep_display(night)
+
+    def _sleep_display(self, night: bool) -> None:
+        """Park the screen: backlight off + rendering stopped (mode untouched)."""
+        try:
+            set_power(False)
+        except Exception as e:
+            logger.warning(f"Display park error: {e}")
+        if self._avatar is not None:
+            self._avatar.pause_render()
+        self._display_off = True
+        logger.info("Display idle — parked (render off, backlight off)")
+
+    def _wake_display(self, night: bool) -> None:
+        """Wake a parked screen, resuming where it left off."""
+        self._display_off = False
+        if self._avatar is not None:
+            self._avatar.resume_render()
+        try:
+            if night and self._night_mode is not None:
+                self._night_mode.reapply_display()  # CLOCK + night brightness
+            else:
+                set_power(True)
+                set_brightness(100)
+        except Exception as e:
+            logger.warning(f"Display wake error: {e}")
+        self._last_interaction = time.monotonic()
+        logger.info("Display woken")
 
     def _is_preempted(self) -> bool:
         """True when night mode, a ringing alarm, or settings owns the device."""
@@ -318,6 +452,10 @@ class DODI:
         settings_was_open = False
         try:
             while self.running:
+                # Idle display-off / wake-on-touch (runs in every context,
+                # including while night mode / an alarm preempt the loop below).
+                self._tick_display_power()
+
                 # Manage the backlight around the settings overlay (so it's
                 # readable even when night mode has dimmed the screen).
                 settings_open = self._avatar is not None and self._avatar.settings_active
@@ -438,18 +576,19 @@ def main() -> int:
     if detect_screen():
         print("  [+] Round display detected - starting avatar")
         dodi._avatar = AvatarDisplay()
-        dodi._avatar.bind_settings(settings, save_settings)
+        dodi._avatar.bind_settings(settings, save_settings, dodi.apply_setting)
         dodi._avatar.start()
         dodi._avatar.set_deaf(True)  # boot showing headphones (DEAF)
     else:
         print("  [-] No display detected - running headless")
 
-    # Night mode manager (no-op when disabled in config)
-    night_cfg = settings.get("night_mode", {})
-    if night_cfg.get("enabled"):
+    # Night mode manager. Always constructed when the config block exists (so the
+    # settings UI can enable/disable it live); start() is a no-op while disabled.
+    night_cfg = settings.get("night_mode")
+    if night_cfg is not None:
         dodi._night_mode = NightModeManager(night_cfg, dodi._avatar, dodi)
         dodi._night_mode.start()
-        print("  [+] Night mode enabled")
+        print("  [+] Night mode " + ("enabled" if night_cfg.get("enabled") else "ready (disabled)"))
 
     # Alarm engine (decoupled from night mode; reads the `alarm` config block)
     if settings.get("alarm") is not None:

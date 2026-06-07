@@ -106,6 +106,36 @@ class NightModeManager:
         self._thread.start()
         logger.info("Night mode manager started")
 
+    def set_enabled(self, enabled: bool) -> None:
+        """Enable/disable night mode at runtime (live, from the settings UI).
+
+        Enabling (re)starts the scheduler thread; disabling stops it. A disable
+        mid-session lets the worker's own cleanup restore the display (full
+        brightness, avatar mode) as it unwinds, so no display work happens here.
+        Safe to call from any thread; the worker is responsive to ``_stop`` so the
+        join returns promptly.
+        """
+        enabled = bool(enabled)
+        if enabled:
+            self._enabled = True
+            self._stop.clear()
+            if self._thread is None:
+                self._thread = threading.Thread(
+                    target=self._run, daemon=True, name="dodi-night-mode"
+                )
+                self._thread.start()
+                logger.info("Night mode enabled at runtime")
+        else:
+            if self._thread is None and not self._enabled:
+                return
+            self._enabled = False
+            self._stop.set()
+            t, self._thread = self._thread, None
+            if t is not None:
+                t.join(timeout=3.0)
+            self._state_changed.set()   # wake any wait_until_inactive()
+            logger.info("Night mode disabled at runtime")
+
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:

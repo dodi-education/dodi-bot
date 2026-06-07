@@ -150,6 +150,28 @@ def test_two_finger_swipe_opens_settings():
     assert av.settings_active is True
 
 
+def test_two_finger_swipe_up_opens_system_settings():
+    av = AvatarDisplay()
+    # two fingers down near the bottom
+    av._track_swipe(pygame.event.Event(pygame.FINGERDOWN, finger_id=1, x=0.4, y=0.8, touch_id=0), DisplayMode.AVATAR)
+    av._track_swipe(pygame.event.Event(pygame.FINGERDOWN, finger_id=2, x=0.6, y=0.8, touch_id=0), DisplayMode.AVATAR)
+    assert av.settings_active is False
+    # both drag up well past the threshold
+    av._track_swipe(pygame.event.Event(pygame.FINGERMOTION, finger_id=1, x=0.4, y=0.5, dx=0.0, dy=-0.3, touch_id=0), DisplayMode.AVATAR)
+    av._track_swipe(pygame.event.Event(pygame.FINGERMOTION, finger_id=2, x=0.6, y=0.5, dx=0.0, dy=-0.3, touch_id=0), DisplayMode.AVATAR)
+    assert av.settings_active is True
+    assert av.active_overlay == "system"
+
+
+def test_swipe_down_opens_alarm_overlay():
+    av = AvatarDisplay()
+    av._track_swipe(pygame.event.Event(pygame.FINGERDOWN, finger_id=1, x=0.4, y=0.2, touch_id=0), DisplayMode.AVATAR)
+    av._track_swipe(pygame.event.Event(pygame.FINGERDOWN, finger_id=2, x=0.6, y=0.2, touch_id=0), DisplayMode.AVATAR)
+    av._track_swipe(pygame.event.Event(pygame.FINGERMOTION, finger_id=1, x=0.4, y=0.5, dx=0.0, dy=0.3, touch_id=0), DisplayMode.AVATAR)
+    av._track_swipe(pygame.event.Event(pygame.FINGERMOTION, finger_id=2, x=0.6, y=0.5, dx=0.0, dy=0.3, touch_id=0), DisplayMode.AVATAR)
+    assert av.active_overlay == "alarm"
+
+
 def test_two_finger_swipe_works_in_clock_mode():
     # Night-mode clock should also accept the swipe-to-open gesture.
     av = AvatarDisplay()
@@ -168,3 +190,162 @@ def test_swipe_ignored_in_blank_mode():
     av._track_swipe(pygame.event.Event(pygame.FINGERMOTION, finger_id=1, x=0.4, y=0.6, dx=0.0, dy=0.4, touch_id=0), DisplayMode.BLANK)
     av._track_swipe(pygame.event.Event(pygame.FINGERMOTION, finger_id=2, x=0.6, y=0.6, dx=0.0, dy=0.4, touch_id=0), DisplayMode.BLANK)
     assert av.settings_active is False
+
+
+# ------------------------------------------- single-finger horizontal swipe
+
+def _hswipe(av, mode, x_from, x_to, y=0.5):
+    av._track_h_swipe(pygame.event.Event(pygame.FINGERDOWN, finger_id=1, x=x_from, y=y, touch_id=0), mode, 100.0)
+    av._track_h_swipe(pygame.event.Event(pygame.FINGERMOTION, finger_id=1, x=x_to, y=y, touch_id=0), mode, 100.0)
+
+
+def test_left_swipe_enters_info_from_avatar():
+    av = AvatarDisplay()
+    _hswipe(av, DisplayMode.AVATAR, 0.85, 0.40)
+    assert av.mode == DisplayMode.INFO
+
+
+def test_right_swipe_returns_to_avatar_from_info():
+    av = AvatarDisplay()
+    av.set_mode(DisplayMode.INFO)
+    _hswipe(av, DisplayMode.INFO, 0.20, 0.70)
+    assert av.mode == DisplayMode.AVATAR
+
+
+def test_left_swipe_does_nothing_from_info():
+    # No wraparound: left only commits from AVATAR.
+    av = AvatarDisplay()
+    av.set_mode(DisplayMode.INFO)
+    _hswipe(av, DisplayMode.INFO, 0.85, 0.40)
+    assert av.mode == DisplayMode.INFO
+
+
+def test_vertical_drag_is_not_a_horizontal_swipe():
+    av = AvatarDisplay()
+    av._track_h_swipe(pygame.event.Event(pygame.FINGERDOWN, finger_id=1, x=0.5, y=0.2, touch_id=0), DisplayMode.AVATAR, 100.0)
+    av._track_h_swipe(pygame.event.Event(pygame.FINGERMOTION, finger_id=1, x=0.55, y=0.85, touch_id=0), DisplayMode.AVATAR, 100.0)
+    assert av.mode == DisplayMode.AVATAR
+
+
+def test_small_move_marks_gesture_moved_but_no_switch():
+    # A tap-sized wobble neither switches mode nor stays "unmoved" past TAP_RADIUS.
+    av = AvatarDisplay()
+    av._track_h_swipe(pygame.event.Event(pygame.FINGERDOWN, finger_id=1, x=0.5, y=0.5, touch_id=0), DisplayMode.AVATAR, 100.0)
+    av._track_h_swipe(pygame.event.Event(pygame.FINGERMOTION, finger_id=1, x=0.53, y=0.5, touch_id=0), DisplayMode.AVATAR, 100.0)
+    assert av.mode == DisplayMode.AVATAR
+    assert av._h_gesture is not None and av._h_gesture["fired"] is False
+
+
+def test_two_finger_swipe_does_not_trigger_horizontal_swipe():
+    # Regression: a second finger's motion vs. the first finger's origin has a
+    # large horizontal delta early in the gesture; the single-finger tracker must
+    # cancel on the 2nd finger so it never switches to INFO.
+    av = AvatarDisplay()
+    av._track_h_swipe(pygame.event.Event(pygame.FINGERDOWN, finger_id=1, x=0.30, y=0.20, touch_id=0), DisplayMode.AVATAR, 100.0)
+    av._track_h_swipe(pygame.event.Event(pygame.FINGERDOWN, finger_id=2, x=0.70, y=0.20, touch_id=0), DisplayMode.AVATAR, 100.0)
+    av._track_h_swipe(pygame.event.Event(pygame.FINGERMOTION, finger_id=1, x=0.30, y=0.25, touch_id=0), DisplayMode.AVATAR, 100.0)
+    av._track_h_swipe(pygame.event.Event(pygame.FINGERMOTION, finger_id=2, x=0.70, y=0.25, touch_id=0), DisplayMode.AVATAR, 100.0)
+    assert av.mode == DisplayMode.AVATAR
+    assert av._h_gesture is not None and av._h_gesture["cancel"] is True
+
+
+def test_reset_clears_stale_fingers_so_single_swipe_works_again():
+    # Regression: a two-finger swipe leaves touch ids in _h_fingers whose UPs are
+    # swallowed by the opened overlay (ids are never reused on this panel), so
+    # without a reset every later single-finger swipe trips the multi-touch guard.
+    av = AvatarDisplay()
+    av._track_h_swipe(pygame.event.Event(pygame.FINGERDOWN, finger_id=1019, x=0.4, y=0.2, touch_id=0), DisplayMode.AVATAR, 1.0)
+    av._track_h_swipe(pygame.event.Event(pygame.FINGERDOWN, finger_id=1020, x=0.6, y=0.2, touch_id=0), DisplayMode.AVATAR, 1.0)
+    assert len(av._h_fingers) == 2  # both ids stuck (their UPs would be swallowed)
+
+    av._reset_h_gesture()           # what the loop does while a settings overlay is open
+    assert av._h_fingers == set()
+    assert av._h_gesture is None
+
+    # A fresh single-finger left swipe now works again.
+    av._track_h_swipe(pygame.event.Event(pygame.FINGERDOWN, finger_id=1025, x=0.85, y=0.5, touch_id=0), DisplayMode.AVATAR, 2.0)
+    av._track_h_swipe(pygame.event.Event(pygame.FINGERMOTION, finger_id=1025, x=0.40, y=0.5, touch_id=0), DisplayMode.AVATAR, 2.0)
+    assert av.mode == DisplayMode.INFO
+
+
+def test_track_swipe_clears_stale_finger_in_info_mode():
+    # A finger that entered _swipe_fingers in AVATAR but lifts in INFO must be
+    # cleared, or its frozen ~0 delta blocks all later two-finger detection.
+    av = AvatarDisplay()
+    av._track_swipe(pygame.event.Event(pygame.FINGERDOWN, finger_id=1238, x=0.5, y=0.5, touch_id=0), DisplayMode.AVATAR)
+    assert 1238 in av._swipe_fingers
+    av._track_swipe(pygame.event.Event(pygame.FINGERUP, finger_id=1238, x=0.5, y=0.5, touch_id=0), DisplayMode.INFO)
+    assert av._swipe_fingers == {}
+
+
+def test_left_swipe_then_two_finger_swipe_still_opens_settings():
+    # Regression for the reported "two-finger stops working after a left/right
+    # swipe": the left swipe's finger-up lands in INFO; without clearing it leaks
+    # into _swipe_fingers and poisons the next two-finger swipe.
+    av = AvatarDisplay()
+
+    def route(ev):  # mimic the event loop (both trackers, every mode)
+        cm = av.mode
+        av._track_h_swipe(ev, cm, 1.0)
+        av._track_swipe(ev, cm)
+
+    # single-finger LEFT: down+motion in AVATAR (-> INFO), up in INFO
+    route(pygame.event.Event(pygame.FINGERDOWN, finger_id=1238, x=0.85, y=0.5, touch_id=0))
+    route(pygame.event.Event(pygame.FINGERMOTION, finger_id=1238, x=0.40, y=0.5, touch_id=0))
+    assert av.mode == DisplayMode.INFO
+    route(pygame.event.Event(pygame.FINGERUP, finger_id=1238, x=0.40, y=0.5, touch_id=0))
+    assert av._swipe_fingers == {}  # the stale finger was cleared in INFO
+
+    # single-finger RIGHT back to AVATAR
+    route(pygame.event.Event(pygame.FINGERDOWN, finger_id=1239, x=0.20, y=0.5, touch_id=0))
+    route(pygame.event.Event(pygame.FINGERMOTION, finger_id=1239, x=0.70, y=0.5, touch_id=0))
+    route(pygame.event.Event(pygame.FINGERUP, finger_id=1239, x=0.70, y=0.5, touch_id=0))
+    assert av.mode == DisplayMode.AVATAR
+
+    # a two-finger swipe-down must STILL open the alarm overlay
+    for ev in [
+        pygame.event.Event(pygame.FINGERDOWN, finger_id=1240, x=0.4, y=0.20, touch_id=0),
+        pygame.event.Event(pygame.FINGERDOWN, finger_id=1241, x=0.6, y=0.20, touch_id=0),
+        pygame.event.Event(pygame.FINGERMOTION, finger_id=1240, x=0.4, y=0.55, touch_id=0),
+        pygame.event.Event(pygame.FINGERMOTION, finger_id=1241, x=0.6, y=0.55, touch_id=0),
+    ]:
+        route(ev)
+    assert av.active_overlay == "alarm"
+
+
+def test_two_finger_swipe_down_opens_alarm_from_info_screen():
+    # Two-finger settings swipes must work on the info screen too, not just avatar.
+    av = AvatarDisplay()
+    av.set_mode(DisplayMode.INFO)
+    av._track_swipe(pygame.event.Event(pygame.FINGERDOWN, finger_id=1, x=0.4, y=0.2, touch_id=0), DisplayMode.INFO)
+    av._track_swipe(pygame.event.Event(pygame.FINGERDOWN, finger_id=2, x=0.6, y=0.2, touch_id=0), DisplayMode.INFO)
+    av._track_swipe(pygame.event.Event(pygame.FINGERMOTION, finger_id=1, x=0.4, y=0.55, dx=0.0, dy=0.35, touch_id=0), DisplayMode.INFO)
+    av._track_swipe(pygame.event.Event(pygame.FINGERMOTION, finger_id=2, x=0.6, y=0.55, dx=0.0, dy=0.35, touch_id=0), DisplayMode.INFO)
+    assert av.active_overlay == "alarm"
+
+
+def test_two_finger_swipe_up_opens_system_from_info_screen():
+    av = AvatarDisplay()
+    av.set_mode(DisplayMode.INFO)
+    av._track_swipe(pygame.event.Event(pygame.FINGERDOWN, finger_id=1, x=0.4, y=0.8, touch_id=0), DisplayMode.INFO)
+    av._track_swipe(pygame.event.Event(pygame.FINGERDOWN, finger_id=2, x=0.6, y=0.8, touch_id=0), DisplayMode.INFO)
+    av._track_swipe(pygame.event.Event(pygame.FINGERMOTION, finger_id=1, x=0.4, y=0.45, dx=0.0, dy=-0.35, touch_id=0), DisplayMode.INFO)
+    av._track_swipe(pygame.event.Event(pygame.FINGERMOTION, finger_id=2, x=0.6, y=0.45, dx=0.0, dy=-0.35, touch_id=0), DisplayMode.INFO)
+    assert av.active_overlay == "system"
+
+
+def test_two_finger_swipe_down_still_opens_alarm_with_h_tracker():
+    # Full pipeline: horizontal tracker first (as the event loop runs it), then
+    # the two-finger tracker. Settings must still open and mode stays AVATAR.
+    av = AvatarDisplay()
+    events = [
+        pygame.event.Event(pygame.FINGERDOWN, finger_id=1, x=0.4, y=0.2, touch_id=0),
+        pygame.event.Event(pygame.FINGERDOWN, finger_id=2, x=0.6, y=0.2, touch_id=0),
+        pygame.event.Event(pygame.FINGERMOTION, finger_id=1, x=0.4, y=0.55, dx=0.0, dy=0.35, touch_id=0),
+        pygame.event.Event(pygame.FINGERMOTION, finger_id=2, x=0.6, y=0.55, dx=0.0, dy=0.35, touch_id=0),
+    ]
+    for ev in events:
+        av._track_h_swipe(ev, DisplayMode.AVATAR, 100.0)
+        av._track_swipe(ev, DisplayMode.AVATAR)
+    assert av.mode == DisplayMode.AVATAR
+    assert av.active_overlay == "alarm"

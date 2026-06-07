@@ -261,6 +261,13 @@ Run the install script again:
 sudo ./scripts/install.sh
 ```
 
+## Todo
+
+- Fetch weather forecast and add as context to dodi so you can ask (how will be the weather today / tomorrow), open-meteo api
+- Update install.sh (make it idempodent)
+- Install should add to auto-start
+
+
 ## License
 
 MIT License - See LICENSE file for details.
