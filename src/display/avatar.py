@@ -148,6 +148,10 @@ class AvatarDisplay:
         self._info_screen = None
         # Continuous CPU-temperature sampler (feeds the info screen's gauge).
         self._cpu_monitor: CpuTempMonitor | None = None
+        # Optional shared weather controller (bound by main so the info screen and
+        # the AI system prompt read one forecast cache); None -> info screen makes
+        # its own.
+        self._weather_controller = None
 
     @property
     def mode(self) -> DisplayMode:
@@ -233,6 +237,13 @@ class AvatarDisplay:
         self._settings = settings
         self._save_settings = save_cb
         self._system_apply = apply_cb
+
+    def bind_weather(self, controller) -> None:
+        """Share a weather controller so the info screen reuses one forecast cache.
+
+        Must be called before :meth:`start` (the info screen reads it on creation).
+        """
+        self._weather_controller = controller
 
     def _alarm_cfg(self) -> dict:
         if self._settings is None:

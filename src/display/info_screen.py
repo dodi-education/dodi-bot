@@ -43,14 +43,25 @@ TEMP_MIN, TEMP_MAX = 30.0, 85.0
 WARM = (224, 138, 75)   # #E08A4B
 HOT = (216, 90, 74)     # #D85A4A
 
-# Condition family -> Tabler icon name (partly falls back to cloud; design ships
-# only the four families plus snow).
+# Condition family -> icon spec for icons.composite(): a single Tabler name, or a
+# back-to-front list of layers {name, scale, dx, dy, occlude?} (dx/dy are fractions
+# of the icon size). The sun always sits behind, peeking from the upper-right; the
+# cloud(s) overlap in front with a knockout occluder so each composite reads as one
+# glyph. "few" = sun-dominant (mostly sunny); "partly" = cloud-dominant; "cloudy" =
+# two overlapping clouds; "showers" = sun + rain cloud.
 _COND_ICON = {
-    "sun": "sun",
-    "partly": "cloud",
-    "cloudy": "cloud",
-    "rain": "cloud-rain",
-    "snow": "cloud-snow",
+    "sun":     "sun",
+    "few":     [{"name": "sun", "scale": 0.92, "dx": 0.10, "dy": -0.08},
+                {"name": "cloud", "scale": 0.55, "dx": -0.20, "dy": 0.20, "occlude": True}],
+    "partly":  [{"name": "sun", "scale": 0.55, "dx": 0.24, "dy": -0.22},
+                {"name": "cloud", "scale": 1.00, "dx": -0.05, "dy": 0.05, "occlude": True}],
+    "cloudy":  [{"name": "cloud", "scale": 0.78, "dx": -0.16, "dy": -0.14},
+                {"name": "cloud", "scale": 0.98, "dx": 0.14, "dy": 0.12, "occlude": True}],
+    "rain":    "cloud-rain",
+    "showers": [{"name": "sun", "scale": 0.52, "dx": 0.24, "dy": -0.24},
+                {"name": "cloud-rain", "scale": 1.00, "dx": -0.05, "dy": 0.05, "occlude": True}],
+    "snow":    "cloud-snow",
+    "storm":   "cloud-bolt",
 }
 
 
@@ -86,7 +97,11 @@ class InfoScreen:
         self._hint_target = None      # (section, sub) for the active weather hint, or None
         self._down_xy = None          # tap-down position (taps fire on release)
         self._last_kick = None        # monotonic ts of the last weather fetch nudge
-        self._weather = weather if weather is not None else weather_mod.WeatherController()
+        # Prefer a controller shared by main (one cache for screen + AI prompt);
+        # fall back to a private one (e.g. in tests / no main binding).
+        self._weather = (weather
+                         or getattr(avatar, "_weather_controller", None)
+                         or weather_mod.WeatherController())
 
     # ---------------------------------------------------------------- state
 
@@ -262,7 +277,8 @@ class InfoScreen:
             day = "Today" if i == 0 else self._dow(d.date)
             widgets.text(screen, day, 17, 800, theme.ACCENT if i == 0 else th["ink"],
                          center=(cx, tile.y + 32))
-            icons.blit(screen, _COND_ICON.get(d.type, "cloud"), int(cx), int(tile.y + 90), 52, theme.ACCENT)
+            icons.composite(screen, _COND_ICON.get(d.type, "cloud"),
+                            int(cx), int(tile.y + 90), 56, theme.ACCENT, th["surface"])
             hi, lo = f"{round(d.hi)}°", f"{round(d.lo)}°"
             hw, lw = widgets.text_w(hi, 23, 900), widgets.text_w(lo, 17, 700)
             gap = 9

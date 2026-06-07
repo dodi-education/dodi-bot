@@ -24,7 +24,7 @@ USED = [
     "clock", "calendar", "chevron-right", "arrow-left", "x", "lock", "search",
     "plus", "minus", "check", "trash", "backspace", "device-desktop",
     # info screen weather glyphs
-    "cloud", "cloud-rain", "cloud-snow",
+    "cloud", "cloud-rain", "cloud-snow", "cloud-filled", "cloud-bolt",
 ]
 
 
@@ -69,3 +69,29 @@ def test_blit_centers_and_returns_rect():
     rect = icons.blit(screen, "moon", 50, 50, 30, (33, 56, 78))
     assert rect.center == (50, 50)
     assert rect.size == (30, 30)
+
+
+def test_filled_icon_recolors_solid():
+    # The filled cloud must rasterize as a solid body (fill=currentColor recolored),
+    # i.e. far more pixels than the 2px outline cloud — it's the composite occluder.
+    filled = pygame.mask.from_surface(icons.get("cloud-filled", 56, (62, 132, 190))).count()
+    outline = pygame.mask.from_surface(icons.get("cloud", 56, (62, 132, 190))).count()
+    assert filled > outline * 1.5
+
+
+def test_composite_renders_every_weather_type():
+    from display import theme
+    from display.info_screen import _COND_ICON
+    for th_name in ("day", "night"):
+        surface_col = theme.THEMES[th_name]["surface"]
+        for typ, spec in _COND_ICON.items():
+            screen = pygame.Surface((140, 140), pygame.SRCALPHA)
+            icons.composite(screen, spec, 70, 70, 56, theme.ACCENT, surface_col)
+            assert pygame.mask.from_surface(screen).count() > 0, (typ, th_name)
+
+
+def test_composite_single_string_spec_delegates_to_blit():
+    screen = pygame.Surface((120, 120), pygame.SRCALPHA)
+    rect = icons.composite(screen, "sun", 60, 60, 40, (62, 132, 190), (255, 255, 255))
+    assert rect.center == (60, 60)
+    assert rect.size == (40, 40)

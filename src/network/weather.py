@@ -13,6 +13,7 @@ state — the info screen turns that into the "Connect to internet…" hint.
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import logging
 import threading
@@ -31,13 +32,17 @@ _ENDPOINT = "https://api.open-meteo.com/v1/forecast"
 @dataclass
 class DailyForecast:
     date: str       # ISO "YYYY-MM-DD"
-    type: str       # one of: sun | partly | cloudy | rain | snow
+    type: str       # sun | few | partly | cloudy | rain | showers | snow | storm
     hi: float       # daily max °C
     lo: float       # daily min °C
 
 
 def weathercode_to_type(code: int) -> str:
-    """Map an Open-Meteo WMO ``weathercode`` to one of the design's icon families."""
+    """Map an Open-Meteo WMO ``weathercode`` to an icon family (code-only fallback).
+
+    The dry-sky split (sun/few/partly/cloudy) is refined by the day's mean cloud
+    cover in :func:`classify_day`; this is what's used when no cloud data exists.
+    """
     c = int(code)
     if c in (0, 1):            # clear / mainly clear
         return "sun"
@@ -47,11 +52,112 @@ def weathercode_to_type(code: int) -> str:
         return "cloudy"
     if c in (71, 73, 75, 77, 85, 86):  # snow / snow showers
         return "snow"
-    return "rain"              # 51-67 drizzle/rain, 80-82 showers, 95-99 thunder
+    if c in (95, 96, 99):      # thunderstorm (+ with hail)
+        return "storm"
+    if c in (80, 81, 82):      # rain showers
+        return "showers"
+    return "rain"              # 51-57 drizzle, 61-67 rain / freezing rain
+
+
+def classify_day(code: int, cloud_mean: float | None) -> str:
+    """Icon type combining the WMO code with the day's mean cloud cover (%).
+
+    Precipitation, snow, storms, showers and fog keep their code-based icon; the
+    dry sky (clear/partly/overcast codes 0-3) is split four ways by ``cloud_mean``
+    so a day that's only partly cloudy doesn't get a full cloud. Falls back to the
+    code-only mapping when cloud cover is unavailable.
+    """
+    c = int(code)
+    base = weathercode_to_type(c)
+    if base in ("sun", "partly", "cloudy") and c not in (45, 48) and cloud_mean is not None:
+        # Okta-style bands for mean daily cloud cover.
+        if cloud_mean < 15:
+            return "sun"
+        if cloud_mean < 40:
+            return "few"
+        if cloud_mean < 70:
+            return "partly"
+        return "cloudy"
+    return base
+
+
+# Condition family -> natural-language label for the AI context block. The model
+# translates these into the user's language when answering.
+_TYPE_LABEL = {
+    "sun": "clear and sunny",
+    "few": "mostly sunny",
+    "partly": "partly cloudy",
+    "cloudy": "mostly cloudy / overcast",
+    "rain": "rain",
+    "showers": "rain showers",
+    "snow": "snow",
+    "storm": "thunderstorms",
+}
+
+
+def _hourly_cloud_by_day(hourly: dict) -> dict:
+    """Mean cloud cover (%) per ISO date from Open-Meteo hourly ``cloudcover``."""
+    times = (hourly or {}).get("time") or []
+    cover = (hourly or {}).get("cloudcover") or (hourly or {}).get("cloud_cover") or []
+    sums: dict = {}
+    counts: dict = {}
+    for t, c in zip(times, cover):
+        if c is None:
+            continue
+        day = str(t)[:10]
+        sums[day] = sums.get(day, 0.0) + c
+        counts[day] = counts.get(day, 0) + 1
+    return {d: sums[d] / counts[d] for d in sums if counts[d]}
+
+_WEEKDAY = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def _relative_day(date_iso: str, today: _dt.date) -> str:
+    """``today`` / ``tomorrow`` / weekday name for an ISO date relative to ``today``."""
+    try:
+        d = _dt.date.fromisoformat(date_iso)
+    except (ValueError, TypeError):
+        return date_iso
+    delta = (d - today).days
+    if delta == 0:
+        return "today"
+    if delta == 1:
+        return "tomorrow"
+    return _WEEKDAY[d.weekday()]
+
+
+def forecast_context(location_name: str, forecasts, today: _dt.date) -> str:
+    """A short weather block for the AI system prompt (``""`` if no usable data).
+
+    Days are labelled today/tomorrow/weekday so the model can answer questions
+    like "Wie wird das Wetter heute/morgen?". Past days (date < today) are skipped
+    so a cache that crossed midnight can't mislabel yesterday as "today".
+    Temperatures are °C.
+    """
+    rows = []
+    for d in forecasts or []:
+        try:
+            if _dt.date.fromisoformat(d.date) < today:
+                continue
+        except (ValueError, TypeError):
+            pass
+        label = _TYPE_LABEL.get(d.type, d.type)
+        rows.append(f"- {_relative_day(d.date, today)} ({d.date}): {label}, "
+                    f"high {round(d.hi)}°C, low {round(d.lo)}°C")
+    if not rows:
+        return ""
+    header = (
+        f"CURRENT WEATHER FORECAST for {location_name} (today is {today.isoformat()}). "
+        "Use this data to answer the user's questions about the weather; temperatures "
+        "are in degrees Celsius. If asked about a day not listed, say you only have "
+        "the forecast for the next few days."
+    )
+    return header + "\n" + "\n".join(rows)
 
 
 def parse_forecast(payload: dict) -> list[DailyForecast]:
     daily = (payload or {}).get("daily") or {}
+    cloud_by_day = _hourly_cloud_by_day((payload or {}).get("hourly") or {})
     dates = daily.get("time") or []
     codes = daily.get("weathercode") or daily.get("weather_code") or []
     his = daily.get("temperature_2m_max") or []
@@ -61,7 +167,7 @@ def parse_forecast(payload: dict) -> list[DailyForecast]:
         try:
             out.append(DailyForecast(
                 date=d,
-                type=weathercode_to_type(codes[i]),
+                type=classify_day(codes[i], cloud_by_day.get(d)),
                 hi=float(his[i]),
                 lo=float(los[i]),
             ))
@@ -76,6 +182,7 @@ def fetch_forecast(lat: float, lon: float, days: int = 3, timeout: float = 8.0) 
         "latitude": lat,
         "longitude": lon,
         "daily": "weathercode,temperature_2m_max,temperature_2m_min",
+        "hourly": "cloudcover",
         "timezone": "auto",
         "forecast_days": days,
     })

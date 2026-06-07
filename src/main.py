@@ -19,6 +19,7 @@ import signal
 import logging
 import argparse
 import asyncio
+import datetime as _dt
 import time
 from pathlib import Path
 from typing import Optional
@@ -58,6 +59,8 @@ from display import AvatarDisplay, detect_screen
 from night_mode import NightModeManager
 from night_mode.display_power import set_brightness, set_power
 from alarm.manager import AlarmManager
+from network import weather as weather_mod
+from network.weather import WeatherController
 from settings_store import load_settings, save_settings
 
 # Load environment variables
@@ -109,6 +112,12 @@ class DODI:
         self._timer = InactivityTimer(self.active_timeout)
         self._provider = None
         self._persona: str = ""
+
+        # Shared weather forecast: fetched in the background and injected into the
+        # AI system prompt so the user can ask about the weather. Shared with the
+        # info screen (same cache) via avatar.bind_weather() in main().
+        self._weather = WeatherController()
+        self._last_weather_kick = 0.0
 
         # Display (wired up by main())
         self._avatar: Optional[AvatarDisplay] = None
@@ -197,6 +206,52 @@ class DODI:
 
         return self._persona
 
+    # ----------------------------------------------------------------- weather
+
+    def _weather_location(self):
+        """``(lat, lon, name)`` if a usable weather location is configured, else None."""
+        w = self.settings.get("weather", {}) or {}
+        lat, lon, name = w.get("lat"), w.get("lon"), w.get("location_name")
+        if lat is None or lon is None or not name:
+            return None
+        try:
+            return float(lat), float(lon), str(name)
+        except (TypeError, ValueError):
+            return None
+
+    def _maybe_refresh_weather(self) -> None:
+        """Kick a throttled background forecast fetch (the controller caches/refreshes).
+
+        Runs every control-loop tick but no-ops more than once a minute; the
+        controller itself only hits the network when its cache is stale, so this
+        keeps a fresh forecast ready for the system prompt without per-tick cost.
+        """
+        now = time.monotonic()
+        if now - self._last_weather_kick < 60.0:
+            return
+        self._last_weather_kick = now
+        loc = self._weather_location()
+        if loc is not None:
+            self._weather.start_fetch(loc[0], loc[1])
+
+    def _weather_context(self) -> str:
+        """Formatted forecast block for the system prompt (``""`` if unavailable)."""
+        loc = self._weather_location()
+        if loc is None:
+            return ""
+        results = self._weather.snapshot().get("results") or []
+        if not results:
+            return ""
+        return weather_mod.forecast_context(loc[2], results, _dt.date.today())
+
+    def build_system_prompt(self) -> str:
+        """The persona plus the current weather forecast, when available."""
+        persona = self.load_persona()
+        ctx = self._weather_context()
+        if not ctx:
+            return persona
+        return f"{persona}\n\n{ctx}" if persona else ctx
+
     def _can_use_voice_streaming(self) -> bool:
         """True if streaming is enabled and the provider's API key is set."""
         return self.use_streaming and is_provider_available(self.streaming_provider_name)
@@ -247,7 +302,7 @@ class DODI:
                 volume=self.volume,
             )
             await provider.start_session(
-                system_prompt=self.load_persona(),
+                system_prompt=self.build_system_prompt(),
                 on_transcript=self._on_transcript,
                 on_end=self._on_turn_end,
             )
@@ -456,6 +511,9 @@ class DODI:
                 # including while night mode / an alarm preempt the loop below).
                 self._tick_display_power()
 
+                # Keep a fresh forecast ready for the AI system prompt + info screen.
+                self._maybe_refresh_weather()
+
                 # Manage the backlight around the settings overlay (so it's
                 # readable even when night mode has dimmed the screen).
                 settings_open = self._avatar is not None and self._avatar.settings_active
@@ -577,6 +635,7 @@ def main() -> int:
         print("  [+] Round display detected - starting avatar")
         dodi._avatar = AvatarDisplay()
         dodi._avatar.bind_settings(settings, save_settings, dodi.apply_setting)
+        dodi._avatar.bind_weather(dodi._weather)  # share one forecast cache
         dodi._avatar.start()
         dodi._avatar.set_deaf(True)  # boot showing headphones (DEAF)
     else:
