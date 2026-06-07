@@ -18,6 +18,7 @@ from pathlib import Path
 import pygame
 
 from . import theme
+from . import widgets
 
 SIZE = 800
 CX = SIZE // 2
@@ -122,11 +123,7 @@ class SettingsScreen:
     # --------------------------------------------------------- event input
 
     def _xy(self, event):
-        if event.type in (pygame.FINGERDOWN, pygame.FINGERMOTION, pygame.FINGERUP):
-            return event.x * SIZE, event.y * SIZE
-        if hasattr(event, "pos"):
-            return event.pos
-        return None
+        return widgets.event_xy(event, SIZE)
 
     def handle_event(self, event) -> None:
         t = event.type
@@ -262,15 +259,8 @@ class SettingsScreen:
             self._draw_audio(screen, th)
 
     def _text(self, screen, s, size, weight, color, center=None, topleft=None, midleft=None):
-        surf = theme.font(size, weight).render(s, True, color)
-        if center is not None:
-            rect = surf.get_rect(center=center)
-        elif midleft is not None:
-            rect = surf.get_rect(midleft=midleft)
-        else:
-            rect = surf.get_rect(topleft=topleft)
-        screen.blit(surf, rect)
-        return rect
+        return widgets.text(screen, s, size, weight, color,
+                            center=center, topleft=topleft, midleft=midleft)
 
     def _draw_pill(self, screen, th) -> None:
         label = self._next_ring_label()
@@ -281,7 +271,7 @@ class SettingsScreen:
         self._text(screen, label, 17, 700, th["muted"], center=(CX, 88))
 
     def _text_w(self, s, size, weight) -> int:
-        return theme.font(size, weight).size(s)[0]
+        return widgets.text_w(s, size, weight)
 
     def _draw_tabs(self, screen, th) -> None:
         w, h, top = 312, 52, 122
@@ -355,10 +345,7 @@ class SettingsScreen:
         self._rects["active"] = ar
 
     def _draw_switch(self, screen, th, x, y, on) -> None:
-        track = pygame.Rect(x, y, 74, 42)
-        pygame.draw.rect(screen, theme.ACCENT if on else th["ring"], track, border_radius=21)
-        knob_x = x + 37 if on else x + 5
-        pygame.draw.circle(screen, (255, 255, 255), (knob_x + 16, y + 21), 16)
+        widgets.draw_switch(screen, th, x, y, on)
 
     def _draw_close(self, screen, th) -> None:
         r = pygame.Rect(CX - 32, SIZE - 34 - 64, 64, 64)
@@ -462,16 +449,12 @@ class SettingsScreen:
         self._rects["_audio_opts"] = opt_rects
 
     def _scrim(self, screen) -> None:
-        s = pygame.Surface((SIZE, SIZE), pygame.SRCALPHA)
-        s.fill((12, 24, 36, 128))
-        screen.blit(s, (0, 0))
+        widgets.scrim(screen, size=SIZE)
 
     # ---- procedural glyphs (Nunito has no ♪ / ✓ / ✕ symbols) -------------
 
     def _alpha_circle(self, screen, center, r, rgba) -> None:
-        s = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
-        pygame.draw.circle(s, rgba, (r, r), r)
-        screen.blit(s, (center[0] - r, center[1] - r))
+        widgets.alpha_circle(screen, center, r, rgba)
 
     def _glyph_x(self, screen, cx, cy, size, color, width) -> None:
         h = size // 2

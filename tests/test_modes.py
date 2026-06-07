@@ -187,6 +187,93 @@ def test_enter_deaf_stops_mic_and_disconnects(monkeypatch):
     assert dodi._avatar.deaf is True
 
 
+# ------------------------------------------- live-apply hook (system settings)
+
+def test_apply_setting_volume_updates_running_audio_and_provider():
+    import main
+    dodi = main.DODI({})
+
+    class _Holder:
+        volume = 0
+    dodi._audio_output = _Holder()
+    dodi._provider = _Holder()
+
+    dodi.apply_setting("audio.volume", 42)
+
+    assert dodi.volume == 42
+    assert dodi._audio_output.volume == 42
+    assert dodi._provider.volume == 42
+
+
+def test_apply_setting_power_timers_take_effect_live():
+    import main
+    dodi = main.DODI({})
+    dodi.apply_setting("power_options.turn_off_display", 90)
+    dodi.apply_setting("power_options.turn_off_display_night_mode", 5)
+    assert dodi._turn_off_day == 90
+    assert dodi._turn_off_night == 5
+    # Switch "off" => null disables idle-off in that context.
+    dodi.apply_setting("power_options.turn_off_display", None)
+    assert dodi._turn_off_day is None
+
+
+def test_apply_setting_night_brightness_and_schedule():
+    import main
+    dodi = main.DODI({})
+
+    class _FakeNight:
+        def __init__(self):
+            self._brightness = 0
+            self._schedule = {}
+            self.reapplied = 0
+
+        def reapply_display(self):
+            self.reapplied += 1
+
+    mgr = _FakeNight()
+    dodi._night_mode = mgr
+
+    dodi.apply_setting("night_mode.display.brightness", 15)
+    assert mgr._brightness == 15
+    assert mgr.reapplied == 1  # re-asserted (instant preview if a session is active)
+
+    sched = {"Mon": [{"timespan": "22:00-23:00"}]}
+    dodi.apply_setting("night_mode.schedule", sched)
+    assert mgr._schedule is sched
+
+
+def test_apply_setting_night_enabled_toggles_manager_live():
+    import main
+    dodi = main.DODI({})
+
+    class _FakeNight:
+        def __init__(self):
+            self.calls = []
+
+        def set_enabled(self, v):
+            self.calls.append(v)
+
+    mgr = _FakeNight()
+    dodi._night_mode = mgr
+    dodi.apply_setting("night_mode.enabled", False)
+    dodi.apply_setting("night_mode.enabled", True)
+    assert mgr.calls == [False, True]
+
+
+def test_apply_setting_night_enabled_without_manager_is_safe():
+    import main
+    dodi = main.DODI({})
+    dodi._night_mode = None
+    dodi.apply_setting("night_mode.enabled", True)   # persist-only fallback, no crash
+
+
+def test_apply_setting_unknown_key_is_noop():
+    import main
+    dodi = main.DODI({})
+    dodi.apply_setting("weather.location_name", "Berlin")  # persist-only; no live hook
+    dodi.apply_setting("alarm.volume", 30)                 # re-read at ring time
+
+
 def test_enter_normal_stays_deaf_when_provider_unavailable(monkeypatch):
     import main
     dodi = main.DODI({"streaming": {"enabled": True, "active": "gemini"}})

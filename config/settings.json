@@ -31,12 +31,23 @@
       "voice": "Ara"
     }
   },
+  "weather": {
+    "location_name": "Klosterneuburg",
+    "country_code": "AT",
+    "lon": 16.32522,
+    "lat": 48.30521
+  },
+  "power_options": {
+    "turn_off_display": 60,
+    "turn_off_display_night_mode": 3,
+    "adaptive_fps": true
+  },
   "night_mode": {
     "enabled": true,
     "deactivate_sst": true,
     "display": {
       "mode": "time",
-      "brightness": 20
+      "brightness": 10
     },
     "schedule": {
       "Mon": [
@@ -65,10 +76,10 @@
       ],
       "Thu": [
         {
-          "timespan": "22:00-24:00"
+          "timespan": "00:00-06:00"
         },
         {
-          "timespan": "00:00-06:00"
+          "timespan": "22:00-24:00"
         }
       ],
       "Fri": [
@@ -89,10 +100,10 @@
       ],
       "Sun": [
         {
-          "timespan": "22:00-24:00"
+          "timespan": "00:00-06:00"
         },
         {
-          "timespan": "00:00-06:00"
+          "timespan": "22:00-24:00"
         }
       ]
     }
@@ -107,37 +118,37 @@
     "stop_alarm_touch": true,
     "one_time_alarm": {
       "active": false,
-      "time": "22:44",
+      "time": "15:05",
       "audio": "morning.mp3"
     },
     "schedule": {
       "Mon": {
-        "active": true,
+        "active": false,
         "time": "06:00",
         "audio": "morning.mp3"
       },
       "Tue": {
-        "active": true,
+        "active": false,
         "time": "06:00",
         "audio": "morning.mp3"
       },
       "Wed": {
-        "active": true,
+        "active": false,
         "time": "06:00",
         "audio": "morning.mp3"
       },
       "Thu": {
-        "active": true,
+        "active": false,
         "time": "08:15",
         "audio": "morning.mp3"
       },
       "Fri": {
-        "active": true,
+        "active": false,
         "time": "06:00",
         "audio": "morning.mp3"
       },
       "Sat": {
-        "active": true,
+        "active": false,
         "time": "06:15",
         "audio": "morning.mp3"
       },
