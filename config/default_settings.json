@@ -1,0 +1,162 @@
+{
+  "language": {
+    "code": "en",
+    "auto_detect": false
+  },
+  "conversation": {
+    "timeout_seconds": 30.0
+  },
+  "persona": {
+    "active": "default",
+    "directory": "personas/"
+  },
+  "audio": {
+    "volume": 30,
+    "input_device": "seeed-2mic-voicecard",
+    "sample_rate": 16000
+  },
+  "streaming": {
+    "enabled": true,
+    "active": "gemini",
+    "openai": {
+      "model": "gpt-realtime",
+      "voice": "alloy"
+    },
+    "gemini": {
+      "model": "gemini-3.1-flash-live-preview",
+      "voice": "Leda"
+    },
+    "grok": {
+      "model": "grok-4-voice",
+      "voice": "Ara"
+    }
+  },
+  "weather": {
+    "location_name": "",
+    "country_code": "",
+    "lon": null,
+    "lat": null
+  },
+  "power_options": {
+    "turn_off_display": 60,
+    "turn_off_display_night_mode": 3,
+    "adaptive_fps": true
+  },
+  "night_mode": {
+    "enabled": true,
+    "deactivate_sst": true,
+    "display": {
+      "mode": "time",
+      "brightness": 10
+    },
+    "schedule": {
+      "Mon": [
+        {
+          "timespan": "22:00-24:00"
+        },
+        {
+          "timespan": "00:00-06:00"
+        }
+      ],
+      "Tue": [
+        {
+          "timespan": "22:00-24:00"
+        },
+        {
+          "timespan": "00:00-06:00"
+        }
+      ],
+      "Wed": [
+        {
+          "timespan": "22:00-24:00"
+        },
+        {
+          "timespan": "00:00-06:00"
+        }
+      ],
+      "Thu": [
+        {
+          "timespan": "22:00-24:00"
+        },
+        {
+          "timespan": "00:00-06:00"
+        }
+      ],
+      "Fri": [
+        {
+          "timespan": "22:00-24:00"
+        },
+        {
+          "timespan": "00:00-06:00"
+        }
+      ],
+      "Sat": [
+        {
+          "timespan": "22:00-24:00"
+        },
+        {
+          "timespan": "00:00-06:00"
+        }
+      ],
+      "Sun": [
+        {
+          "timespan": "22:00-24:00"
+        },
+        {
+          "timespan": "00:00-06:00"
+        }
+      ]
+    }
+  },
+  "alarm": {
+    "volume": 25,
+    "ascending_volume": {
+      "active": true,
+      "start_volume": 5,
+      "duration": 20
+    },
+    "stop_alarm_touch": true,
+    "one_time_alarm": {
+      "active": false,
+      "time": "06:15",
+      "audio": "morning.mp3"
+    },
+    "schedule": {
+      "Mon": {
+        "active": true,
+        "time": "06:00",
+        "audio": "morning.mp3"
+      },
+      "Tue": {
+        "active": true,
+        "time": "06:00",
+        "audio": "morning.mp3"
+      },
+      "Wed": {
+        "active": true,
+        "time": "06:00",
+        "audio": "morning.mp3"
+      },
+      "Thu": {
+        "active": true,
+        "time": "06:00",
+        "audio": "morning.mp3"
+      },
+      "Fri": {
+        "active": true,
+        "time": "06:00",
+        "audio": "morning.mp3"
+      },
+      "Sat": {
+        "active": false,
+        "time": "08:00",
+        "audio": "morning.mp3"
+      },
+      "Sun": {
+        "active": false,
+        "time": "08:00",
+        "audio": "morning.mp3"
+      }
+    }
+  }
+}

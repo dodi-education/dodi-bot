@@ -16,6 +16,9 @@ models/tts/
 # Configuration with secrets
 .env
 
+# Per-device settings (seeded from config/default_settings.json on first run)
+config/settings.json
+
 # IDE
 .vscode/
 .idea/
