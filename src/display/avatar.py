@@ -14,6 +14,7 @@ import random
 import threading
 import time
 from enum import Enum
+from pathlib import Path
 
 import pygame
 
@@ -87,8 +88,13 @@ COL_EYE_IRIS = (30, 70, 120)          # Dark blue iris
 COL_EYE_HIGHLIGHT = (255, 255, 255)   # White sparkles
 COL_BEAK_FILL = (80, 120, 160)        # Medium blue beak
 COL_BEAK_HIGHLIGHT = (130, 170, 210)  # Lighter blue beak highlight
-COL_HEADPHONE = (45, 48, 58)          # Dark headphone shell (deaf mode)
-COL_HEADPHONE_PAD = (95, 100, 120)    # Lighter ear-cushion pad
+# Headphones overlay (DEAF mode) — a pre-made PNG blitted over the normal face.
+_HEADPHONES_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "assets" / "img" / "headphones.png"
+)
+HP_WIDTH = 800          # Scaled-to width of the overlay on the 800px screen.
+HP_EARCUP_FRAC = 0.467  # Vertical fraction of the source image at ear-cup center.
+HP_EARCUP_Y = CY - 20   # Screen y where the ear cups should sit (ear level).
 
 # Layout constants
 FACE_RADIUS = 360
@@ -792,21 +798,43 @@ def _draw_clock(screen, font, sub_font=None, alarm_cfg=None) -> None:
     screen.blit(txt, (x0 + icon_size + gap, y - txt.get_height() // 2))
 
 
+_headphones_surface: pygame.Surface | None = None
+_headphones_loaded = False
+
+
+def _get_headphones() -> pygame.Surface | None:
+    """Load, scale and cache the DEAF-mode headphones overlay (once)."""
+    global _headphones_surface, _headphones_loaded
+    if _headphones_loaded:
+        return _headphones_surface
+    _headphones_loaded = True
+    try:
+        img = pygame.image.load(str(_HEADPHONES_PATH))
+    except (pygame.error, OSError) as e:
+        logger.warning("Headphones overlay not found at %s: %s", _HEADPHONES_PATH, e)
+        return None
+    w, h = img.get_size()
+    scaled_h = max(1, round(h * HP_WIDTH / w))
+    img = pygame.transform.smoothscale(img, (HP_WIDTH, scaled_h))
+    # convert_alpha() speeds up blits but needs a display surface; skip it headless.
+    if pygame.display.get_surface() is not None:
+        try:
+            img = img.convert_alpha()
+        except pygame.error:
+            pass
+    _headphones_surface = img
+    return img
+
+
 def _draw_headphones(screen, sx: int = 0, sy: int = 0) -> None:
-    """Draw over-ear headphones, indicating DEAF (microphone-off) mode."""
-    # Headband: a band of nested arcs arcing over the top of the head.
-    for i in range(14):
-        pygame.draw.arc(
-            screen, COL_HEADPHONE,
-            (CX - 340 + i + sx, CY - 330 + i + sy, 680 - 2 * i, 520 - 2 * i),
-            math.radians(25), math.radians(155), 3,
-        )
-    # Ear cups on each side, with a lighter cushion pad inside.
-    left = pygame.Rect(CX - 360 + sx, CY - 80 + sy, 80, 170)
-    right = pygame.Rect(CX + 280 + sx, CY - 80 + sy, 80, 170)
-    for cup in (left, right):
-        pygame.draw.ellipse(screen, COL_HEADPHONE, cup)
-        pygame.draw.ellipse(screen, COL_HEADPHONE_PAD, cup.inflate(-28, -60))
+    """Overlay the headphones image, indicating DEAF (microphone-off) mode."""
+    surf = _get_headphones()
+    if surf is None:
+        return
+    sw, sh = surf.get_size()
+    left = (SCREEN_SIZE - sw) // 2 + sx
+    top = HP_EARCUP_Y - round(HP_EARCUP_FRAC * sh) + sy
+    screen.blit(surf, (left, top))
 
 
 def _draw_bird_avatar(screen, state: _AnimationState, deaf: bool = False) -> None:
