@@ -4,6 +4,11 @@ Credentials are NOT stored by Dodi: on connect we hand the password to ``nmcli``
 which persists it root-only in ``/etc/NetworkManager/system-connections/`` and
 auto-reconnects on boot. Nothing is written to ``.env`` or ``settings.json``.
 
+When a profile already exists for the target SSID we update and re-activate it in
+place rather than calling ``device wifi connect`` — that command can delete a
+working profile when a freshly-typed password is wrong. A new password is verified
+on a throwaway clone first, so the saved network always survives a failed attempt.
+
 Permissions on this Pi (verified): scanning/listing works unprivileged, but
 ``device wifi connect`` is polkit-``auth`` for a headless service, so connect goes
 through ``sudo -n nmcli`` (passwordless sudo is configured). The blocking calls run
@@ -129,8 +134,41 @@ def _classify_error(stderr: str) -> str:
     return "Could not connect"
 
 
-def connect(ssid: str, password: str | None = None, timeout: float = 45.0) -> ConnectResult:
-    """Join ``ssid`` via ``sudo -n nmcli`` (NetworkManager stores the secret root-only)."""
+_VERIFY_PROFILE = "dodi-verify"   # throwaway clone used to test a new password
+
+
+def _saved_profile_for_ssid(ssid: str) -> str | None:
+    """Name of an existing saved Wi-Fi profile whose SSID is ``ssid``, else None.
+
+    Matches on the stored ``802-11-wireless.ssid`` (not the profile name), so the
+    Raspberry Pi imager's ``preconfigured`` profile is found too. Read-only.
+    """
+    try:
+        cp = _run(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"], timeout=10)
+    except Exception as e:
+        logger.warning("wifi profile lookup failed: %s", e)
+        return None
+    for line in cp.stdout.splitlines():
+        parts = _split_terse(line)
+        if len(parts) < 2 or parts[1] != "802-11-wireless":
+            continue
+        name = parts[0]
+        try:
+            got = _run(["nmcli", "-t", "-g", "802-11-wireless.ssid",
+                        "connection", "show", name], timeout=10)
+        except Exception:
+            continue
+        if got.stdout.strip() == ssid:
+            return name
+    return None
+
+
+def _connect_new(ssid: str, password: str | None, timeout: float) -> ConnectResult:
+    """Create + activate a fresh profile via ``device wifi connect``.
+
+    Used only when nothing is saved for ``ssid``: on failure nmcli discards just the
+    throwaway profile it created, so there is no working config to lose here.
+    """
     args = ["sudo", "-n", "nmcli", "device", "wifi", "connect", ssid]
     if password:
         args += ["password", password]
@@ -144,6 +182,74 @@ def connect(ssid: str, password: str | None = None, timeout: float = 45.0) -> Co
     if cp.returncode == 0:
         return ConnectResult(True, ssid, None)
     return ConnectResult(False, ssid, _classify_error(cp.stderr))
+
+
+def _activate(name: str, ssid: str, timeout: float) -> ConnectResult:
+    """``connection up`` an existing profile (never deletes it on failure)."""
+    try:
+        up = _run(["sudo", "-n", "nmcli", "connection", "up", name], timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return ConnectResult(False, ssid, "Connection timed out")
+    except Exception as e:
+        logger.warning("wifi connect failed: %s", e)
+        return ConnectResult(False, ssid, "Could not connect")
+    if up.returncode == 0:
+        return ConnectResult(True, ssid, None)
+    return ConnectResult(False, ssid, _classify_error(up.stderr))
+
+
+def _reconnect_saved(name: str, ssid: str, password: str | None,
+                     timeout: float) -> ConnectResult:
+    """Re-activate the saved profile ``name`` without ever risking it.
+
+    No password → just re-activate with the stored secret. With a password we test
+    it on a disposable clone of the profile; only once it authenticates do we write
+    it back to the real profile. A wrong password leaves the saved profile — and its
+    previously-working secret — completely untouched.
+    """
+    if not password:
+        return _activate(name, ssid, timeout)
+
+    _run(["sudo", "-n", "nmcli", "connection", "delete", _VERIFY_PROFILE], timeout=10)
+    cl = _run(["sudo", "-n", "nmcli", "connection", "clone", name, _VERIFY_PROFILE],
+              timeout=15)
+    if cl.returncode != 0:
+        logger.warning("wifi clone for password test failed: %s", cl.stderr)
+        return ConnectResult(False, ssid, "Could not connect")
+    _run(["sudo", "-n", "nmcli", "connection", "modify", _VERIFY_PROFILE,
+          "wifi-sec.psk", password, "connection.autoconnect", "no"], timeout=15)
+    try:
+        up = _run(["sudo", "-n", "nmcli", "connection", "up", _VERIFY_PROFILE],
+                  timeout=timeout)
+        err = None if up.returncode == 0 else _classify_error(up.stderr)
+    except subprocess.TimeoutExpired:
+        err = "Connection timed out"
+    except Exception as e:
+        logger.warning("wifi connect failed: %s", e)
+        err = "Could not connect"
+
+    if err is not None:                       # bad password: drop the clone, keep the original
+        _run(["sudo", "-n", "nmcli", "connection", "delete", _VERIFY_PROFILE], timeout=10)
+        return ConnectResult(False, ssid, err)
+
+    # Verified: write the good password to the real profile and switch to it.
+    _run(["sudo", "-n", "nmcli", "connection", "modify", name,
+          "wifi-sec.psk", password], timeout=15)
+    res = _activate(name, ssid, timeout)
+    _run(["sudo", "-n", "nmcli", "connection", "delete", _VERIFY_PROFILE], timeout=10)
+    return res if res.ok else ConnectResult(True, ssid, None)
+
+
+def connect(ssid: str, password: str | None = None, timeout: float = 45.0) -> ConnectResult:
+    """Join ``ssid`` via ``sudo -n nmcli`` (NetworkManager stores the secret root-only).
+
+    If a profile already exists for ``ssid`` it is updated/re-activated in place so a
+    wrong password can never destroy the working config; otherwise a fresh one is made.
+    """
+    existing = _saved_profile_for_ssid(ssid)
+    if existing is not None:
+        return _reconnect_saved(existing, ssid, password, timeout)
+    return _connect_new(ssid, password, timeout)
 
 
 class WifiController:

@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
@@ -56,34 +57,82 @@ def test_classify_error_messages():
 
 
 def test_connect_builds_sudo_argv(monkeypatch):
+    # No saved profile (empty `connection show`) → fresh `device wifi connect`.
     captured = {}
-
-    class _CP:
-        returncode = 0
-        stderr = ""
 
     def fake_run(args, timeout):
         captured["args"] = args
-        return _CP()
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
 
     monkeypatch.setattr(wifi, "_run", fake_run)
     res = wifi.connect("MyNet", "hunter2")
     assert res.ok is True
-    assert captured["args"][:3] == ["sudo", "-n", "nmcli"]
+    assert captured["args"][:6] == ["sudo", "-n", "nmcli", "device", "wifi", "connect"]
     assert "password" in captured["args"] and "hunter2" in captured["args"]
 
 
 def test_connect_open_network_omits_password(monkeypatch):
     captured = {}
 
-    class _CP:
-        returncode = 0
-        stderr = ""
-
     def fake_run(args, timeout):
         captured["args"] = args
-        return _CP()
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
 
     monkeypatch.setattr(wifi, "_run", fake_run)
     wifi.connect("OpenNet", None)
     assert "password" not in captured["args"]
+
+
+def _strip_sudo(args):
+    return args[2:] if args[:2] == ["sudo", "-n"] else args
+
+
+def test_connect_wrong_pw_never_touches_existing_profile(monkeypatch):
+    # A saved "Home" profile exists; a wrong password must not modify or delete it.
+    calls = []
+
+    def fake_run(args, timeout):
+        calls.append(args)
+        n = _strip_sudo(args)
+        cp = SimpleNamespace(returncode=0, stderr="", stdout="")
+        if n[:6] == ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"]:
+            cp.stdout = "Home:802-11-wireless\nWired connection 1:802-3-ethernet\n"
+        elif n[:5] == ["nmcli", "-t", "-g", "802-11-wireless.ssid", "connection"]:
+            cp.stdout = "Home\n"
+        elif n[:4] == ["nmcli", "connection", "up", wifi._VERIFY_PROFILE]:
+            cp.returncode, cp.stderr = 1, "Error: Secrets were required, but not provided"
+        return cp
+
+    monkeypatch.setattr(wifi, "_run", fake_run)
+    res = wifi.connect("Home", "wrongpass")
+
+    assert res.ok is False and res.error == "Wrong password"
+    # The real profile is never modified or deleted...
+    assert not any(_strip_sudo(c)[:3] == ["nmcli", "connection", "modify"]
+                   and _strip_sudo(c)[3] == "Home" for c in calls)
+    assert ["sudo", "-n", "nmcli", "connection", "delete", "Home"] not in calls
+    # ...the wrong password is only ever tried on the throwaway clone, which is cleaned up.
+    assert any(_strip_sudo(c)[:4] == ["nmcli", "connection", "clone", "Home"] for c in calls)
+    assert ["sudo", "-n", "nmcli", "connection", "delete", wifi._VERIFY_PROFILE] in calls
+
+
+def test_connect_right_pw_writes_back_to_existing_profile(monkeypatch):
+    # Saved "Home" profile + correct password → clone verifies, real profile updated.
+    calls = []
+
+    def fake_run(args, timeout):
+        calls.append(args)
+        n = _strip_sudo(args)
+        cp = SimpleNamespace(returncode=0, stderr="", stdout="")
+        if n[:6] == ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"]:
+            cp.stdout = "Home:802-11-wireless\n"
+        elif n[:5] == ["nmcli", "-t", "-g", "802-11-wireless.ssid", "connection"]:
+            cp.stdout = "Home\n"
+        return cp  # everything else succeeds
+
+    monkeypatch.setattr(wifi, "_run", fake_run)
+    res = wifi.connect("Home", "goodpass")
+
+    assert res.ok is True
+    assert ["sudo", "-n", "nmcli", "connection", "modify", "Home",
+            "wifi-sec.psk", "goodpass"] in calls

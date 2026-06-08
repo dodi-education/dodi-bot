@@ -95,7 +95,25 @@ nano .env
 
 ### 4. Run DODI
 
+The installer sets up a `dodi.service` systemd unit and enables it, so **DODI
+starts automatically on every boot** — just power on the device. SSH stays
+available in the background as usual.
+
+Control the service:
+
 ```bash
+sudo systemctl start dodi      # start now (also starts automatically on boot)
+sudo systemctl stop dodi       # stop
+sudo systemctl status dodi     # check status
+journalctl -u dodi -f          # follow logs
+sudo systemctl disable dodi    # turn off auto-start on boot
+```
+
+**Running manually (development):** stop the service first so it doesn't hold
+the display, then launch directly:
+
+```bash
+sudo systemctl stop dodi
 source venv/bin/activate
 python src/main.py
 ```

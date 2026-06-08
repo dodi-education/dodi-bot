@@ -255,7 +255,7 @@ echo ""
 # ============================================
 # Step 1: System Update
 # ============================================
-echo -e "${BLUE}[1/7] Updating system packages...${NC}"
+echo -e "${BLUE}[1/8] Updating system packages...${NC}"
 
 # Check if apt cache was updated recently (within last hour)
 APT_CACHE_AGE=3600  # 1 hour in seconds
@@ -271,7 +271,7 @@ echo ""
 # ============================================
 # Step 2: Install System Dependencies
 # ============================================
-echo -e "${BLUE}[2/7] Installing system dependencies...${NC}"
+echo -e "${BLUE}[2/8] Installing system dependencies...${NC}"
 
 PACKAGES=(
     "git"
@@ -368,7 +368,7 @@ echo ""
 # ============================================
 # Step 3: Detect and Install Seeed Voice Card
 # ============================================
-echo -e "${BLUE}[3/7] Checking Seeed Voice Card driver...${NC}"
+echo -e "${BLUE}[3/8] Checking Seeed Voice Card driver...${NC}"
 
 SEEED_INSTALLED=false
 SEEED_WORKING=false
@@ -578,7 +578,7 @@ echo ""
 # ============================================
 # Step 4: Create Python Virtual Environment
 # ============================================
-echo -e "${BLUE}[4/7] Setting up Python virtual environment...${NC}"
+echo -e "${BLUE}[4/8] Setting up Python virtual environment...${NC}"
 
 VENV_DIR="$PROJECT_DIR/venv"
 
@@ -621,7 +621,7 @@ echo ""
 # ============================================
 # Step 5: Install Python Dependencies
 # ============================================
-echo -e "${BLUE}[5/7] Installing Python dependencies...${NC}"
+echo -e "${BLUE}[5/8] Installing Python dependencies...${NC}"
 
 # Check if key packages are already installed to skip slow pip install
 # These are the slowest/most important packages from requirements.txt
@@ -658,7 +658,7 @@ echo ""
 # ============================================
 # Step 6: Local AI Models (none required) + UI fonts
 # ============================================
-echo -e "${BLUE}[6/7] Local AI models...${NC}"
+echo -e "${BLUE}[6/8] Local AI models...${NC}"
 echo -e "  ${GREEN}[+]${NC} None needed — DODI uses a cloud live-conversation provider"
 
 # The alarm UI uses the Nunito font. The TTFs are committed to assets/fonts/;
@@ -693,7 +693,7 @@ echo ""
 # ============================================
 # Step 7: Setup Configuration
 # ============================================
-echo -e "${BLUE}[7/7] Setting up configuration...${NC}"
+echo -e "${BLUE}[7/8] Setting up configuration...${NC}"
 
 # Handle .env file - preserve existing if API key not explicitly provided
 if [ "$PROVIDER" != "skip" ]; then
@@ -725,8 +725,62 @@ echo -e "${GREEN}[OK]${NC} Configuration complete"
 echo ""
 
 # ============================================
+# Step 8: Auto-start service
+# ============================================
+echo -e "${BLUE}[8/8] Configuring auto-start service...${NC}"
+
+SERVICE_FILE="/etc/systemd/system/dodi.service"
+NEW_SERVICE_CONTENT="$(cat <<EOF
+[Unit]
+Description=DODI - Didactic Doing Robot Companion
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=$ACTUAL_USER
+WorkingDirectory=$PROJECT_DIR
+ExecStart=$PROJECT_DIR/venv/bin/python $PROJECT_DIR/src/main.py
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+)"
+
+# Write only if missing or changed, then reload (idempotent)
+if [ ! -f "$SERVICE_FILE" ] || ! printf '%s\n' "$NEW_SERVICE_CONTENT" | cmp -s - "$SERVICE_FILE"; then
+    printf '%s\n' "$NEW_SERVICE_CONTENT" > "$SERVICE_FILE"
+    systemctl daemon-reload
+    echo -e "  [+] Installed $SERVICE_FILE"
+else
+    echo -e "  [+] Service file already up to date"
+fi
+
+# Enable on boot (idempotent guard keeps output clean)
+if systemctl is-enabled --quiet dodi.service; then
+    echo -e "  [+] Service already enabled on boot"
+else
+    systemctl enable dodi.service >/dev/null 2>&1
+    echo -e "  [+] Enabled dodi.service to start on boot"
+fi
+
+echo -e "${GREEN}[OK]${NC} Auto-start configured"
+echo ""
+
+# ============================================
 # Installation Summary
 # ============================================
+# Everything past this point is diagnostic reporting + next steps. Individual
+# probes are allowed to fail (e.g. a missing optional package, a broken venv
+# console-script); they must never abort the installer, so disable errexit here.
+set +e
+
 echo ""
 echo -e "${BLUE}=================================================="
 echo "  INSTALLATION SUMMARY"
@@ -751,15 +805,15 @@ print_status() {
     case "$status" in
         ok)
             echo -e "${GREEN}[OK]${NC}     $detail"
-            ((TOTAL_OK++))
+            TOTAL_OK=$((TOTAL_OK + 1))
             ;;
         warn)
             echo -e "${YELLOW}[WARN]${NC}   $detail"
-            ((TOTAL_WARN++))
+            TOTAL_WARN=$((TOTAL_WARN + 1))
             ;;
         fail)
             echo -e "${RED}[FAIL]${NC}   $detail"
-            ((TOTAL_FAIL++))
+            TOTAL_FAIL=$((TOTAL_FAIL + 1))
             ERRORS+=("$component: $detail")
             ;;
     esac
@@ -827,8 +881,10 @@ declare -A PY_PACKAGES=(
 )
 
 for pkg in "${!PY_PACKAGES[@]}"; do
-    if [ -f "$PROJECT_DIR/venv/bin/pip" ]; then
-        pkg_info=$("$PROJECT_DIR/venv/bin/pip" show "$pkg" 2>/dev/null)
+    if [ -x "$PROJECT_DIR/venv/bin/python" ]; then
+        # Use `python -m pip` (not the venv's pip console-script, whose shebang
+        # can be stale if the project dir was renamed) so this reports honestly.
+        pkg_info=$("$PROJECT_DIR/venv/bin/python" -m pip show "$pkg" 2>/dev/null)
         if [ -n "$pkg_info" ]; then
             pkg_ver=$(echo "$pkg_info" | grep "^Version:" | cut -d' ' -f2)
             print_status "$pkg" "ok" "v$pkg_ver"
@@ -879,6 +935,13 @@ if [ -d "$PROJECT_DIR/personas" ] && [ "$(ls -A "$PROJECT_DIR/personas" 2>/dev/n
     print_status "Personas" "ok" "$persona_count persona(s) found"
 else
     print_status "Personas" "warn" "No personas configured"
+fi
+
+# Check auto-start service
+if systemctl is-enabled --quiet dodi.service 2>/dev/null; then
+    print_status "Auto-start service" "ok" "Enabled (starts on boot)"
+else
+    print_status "Auto-start service" "warn" "Not enabled"
 fi
 
 # ============================================
@@ -951,12 +1014,16 @@ if [ "$PROVIDER" != "skip" ]; then
     fi
 fi
 
-echo -e "  ${STEP}. Activate the virtual environment"
-echo "     source $PROJECT_DIR/venv/bin/activate"
+echo -e "  ${STEP}. ${GREEN}DODI starts automatically on the next boot${NC}"
+echo "     Start now without rebooting:  sudo systemctl start dodi"
+echo "     Watch logs:                   journalctl -u dodi -f"
+echo "     Stop / disable autostart:     sudo systemctl stop dodi / sudo systemctl disable dodi"
 echo ""
 ((STEP++))
 
-echo -e "  ${STEP}. Run DODI"
+echo -e "  ${STEP}. Run DODI manually (development; stop the service first)"
+echo "     sudo systemctl stop dodi"
+echo "     source $PROJECT_DIR/venv/bin/activate"
 echo "     python $PROJECT_DIR/src/main.py"
 echo ""
 
