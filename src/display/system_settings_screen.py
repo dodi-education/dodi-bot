@@ -518,10 +518,7 @@ class SystemSettingsScreen:
                       loc, "nav_location")
 
     def _draw_close(self, screen, th) -> None:
-        r = pygame.Rect(CX - 32, SIZE - 34 - 64, 64, 64)
-        pygame.draw.circle(screen, th["surface2"], r.center, 32)
-        icons.blit(screen, "x", r.centerx, r.centery, 26, th["muted"])
-        self._rects["close"] = r
+        self._rects["close"] = widgets.close_button(screen, th)
 
     # ----------------------------------------------------- schedule sheet
 

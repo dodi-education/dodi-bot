@@ -78,14 +78,14 @@ def test_dial_angle_mapping():
     scr, _, _ = _screen()
     scr.overlay = "dial"
     scr._dfield = "h"
-    scr._dial_from_xy((400, 472 - 224))   # straight up -> hour 0
+    scr._dial_from_xy((400, 416 - 224))   # straight up -> hour 0
     assert scr._dh == 0
-    scr._dial_from_xy((400 + 224, 472))   # right -> hour 6 (quarter turn)
+    scr._dial_from_xy((400 + 224, 416))   # right -> hour 6 (quarter turn)
     assert scr._dh == 6
-    scr._dial_from_xy((400, 472 + 224))   # down -> hour 12
+    scr._dial_from_xy((400, 416 + 224))   # down -> hour 12
     assert scr._dh == 12
     scr._dfield = "m"
-    scr._dial_from_xy((400 + 224, 472))   # right -> minute 15
+    scr._dial_from_xy((400 + 224, 416))   # right -> minute 15
     assert scr._dm == 15
 
 
@@ -126,7 +126,7 @@ def test_hero_opens_dial_then_set_commits_and_activates():
     assert scr.overlay == "dial"
     # hero loaded Sat's existing 06:30 into the dial; drag the hour to 12.
     scr._dfield = "h"
-    scr._dial_from_xy((400, 472 + 224))  # hour 12
+    scr._dial_from_xy((400, 416 + 224))  # hour 12
     scr.draw(surf2)                      # refresh dial rects
     _tap(scr, scr._rects["dial_set"])    # Set
     assert scr.overlay is None
@@ -134,6 +134,32 @@ def test_hero_opens_dial_then_set_commits_and_activates():
     assert sat["time"] == "12:30"        # hour dragged, minutes unchanged
     assert sat["active"] is True         # Set auto-activates
     assert av.saves >= 1
+
+
+def test_dial_cancel_closes_without_committing():
+    scr, av, surf = _screen()
+    _tap(scr, scr._rects["hero"])
+    assert scr.overlay == "dial"
+    surf2 = pygame.Surface((800, 800))
+    scr.draw(surf2)                      # populate the (bottom) cancel rect
+    cancel = scr._rects["dial_cancel"]
+    assert cancel.centery > 600          # cancel button lives at the bottom now
+    _tap(scr, cancel)
+    assert scr.overlay is None
+
+
+def test_scrim_blurs_and_dims():
+    from display import widgets
+    surf = pygame.Surface((800, 800))
+    surf.fill((255, 255, 255))
+    pygame.draw.rect(surf, (0, 0, 0), pygame.Rect(0, 0, 400, 800))  # hard edge
+    widgets.scrim(surf)
+    # Dim: a white region is darkened by the 50% navy overlay.
+    r, g, b = surf.get_at((600, 400))[:3]
+    assert r < 240 and b < 250
+    # Blur: the hard black/white edge at x=400 is no longer a clean split.
+    edge = surf.get_at((400, 400))[:3]
+    assert 30 < edge[0] < 230
 
 
 # ------------------------------------------------------- two-finger swipe

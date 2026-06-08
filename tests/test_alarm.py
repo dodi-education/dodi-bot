@@ -49,6 +49,14 @@ def test_next_ring_one_time_tomorrow_when_passed():
     assert nr["once"] is True and nr["label"] == "Tomorrow"
 
 
+def test_next_ring_one_time_today_while_ringing():
+    # When the one-time alarm is actively triggering, alarm time == now;
+    # it must read "Today", not "Tomorrow".
+    cfg = _cfg(one_time={"active": True, "time": "07:00", "audio": "m.mp3"})
+    nr = next_ring(cfg, WED_0700)  # 07:00 == now (the ringing minute)
+    assert nr["once"] is True and nr["label"] == "Today"
+
+
 def test_next_ring_schedule_today():
     cfg = _cfg(schedule=_all_days(time="06:00"))
     nr = next_ring(cfg, WED_0500)

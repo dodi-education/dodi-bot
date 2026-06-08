@@ -46,7 +46,7 @@ def next_ring(alarm_cfg: dict, now: datetime) -> Optional[dict]:
         h, m = _parse_t(one.get("time"))
         return {
             "time": one.get("time", "06:00"),
-            "label": "Today" if (h * 60 + m) > cur else "Tomorrow",
+            "label": "Today" if (h * 60 + m) >= cur else "Tomorrow",
             "day": None,
             "audio": one.get("audio"),
             "once": True,

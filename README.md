@@ -435,6 +435,11 @@ journalctl -u dodi -b      # full logs from this boot
 A common cause is the display being held by something else — make sure no manual
 `python src/main.py` is running.
 
+## TODO
+
+- Fix sound lags
+- Fix UI bugs
+
 ## License
 
 MIT License — see the LICENSE file for details.

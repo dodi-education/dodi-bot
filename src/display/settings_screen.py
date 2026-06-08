@@ -22,6 +22,7 @@ from . import widgets
 
 SIZE = 800
 CX = SIZE // 2
+_DIAL_CY = 416  # dial center Y (design alarm-dial.jsx: CY=416)
 
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 DAY_FULL = {
@@ -218,9 +219,9 @@ class SettingsScreen:
             self._dragging = False
 
     def _dial_from_xy(self, xy) -> None:
-        # Geometry from the design's alarm-dial.jsx (C=400, CY=472).
+        # Geometry from the design's alarm-dial.jsx (C=400, CY=416).
         px, py = xy
-        theta = math.atan2(px - CX, -(py - 472))
+        theta = math.atan2(px - CX, -(py - _DIAL_CY))
         if theta < 0:
             theta += 2 * math.pi
         frac = theta / (2 * math.pi)
@@ -274,7 +275,7 @@ class SettingsScreen:
         return widgets.text_w(s, size, weight)
 
     def _draw_tabs(self, screen, th) -> None:
-        w, h, top = 312, 52, 122
+        w, h, top = 312, 90, 110  # double-height toggle, nudged up to clear the chips
         outer = pygame.Rect(CX - w // 2, top, w, h)
         pygame.draw.rect(screen, th["surface2"], outer, border_radius=h // 2)
         half = (w - 12) // 2
@@ -321,7 +322,8 @@ class SettingsScreen:
         label = DAY_FULL[self.selected] if self.tab == "weekly" else "One-time alarm"
         self._text(screen, label.upper(), 19, 700, th["muted"], center=(CX, 350))
         time_str = ent.get("time", "06:00")
-        color = th["ink"] if active else tuple(int(c * 0.55 + bgc * 0.45) for c, bgc in zip(th["ink"], th["bg_top"]))
+        # Inactive alarm: dim the time toward the background (design opacity .38).
+        color = th["ink"] if active else tuple(int(c * 0.38 + bgc * 0.62) for c, bgc in zip(th["ink"], th["bg_top"]))
         surf = theme.font(108, 900).render(time_str, True, color)
         rect = surf.get_rect(center=(CX, 420))
         screen.blit(surf, rect)
@@ -329,7 +331,7 @@ class SettingsScreen:
         self._rects["hero"] = rect.inflate(60, 40)
 
     def _draw_actions(self, screen, th) -> None:
-        cw, chh, gap, top = 230, 92, 18, 512
+        cw, chh, gap, top = 230, 92, 18, 540  # lowered to give the hero underline room
         ent = self._entity()
         # Sound card (left)
         sr = pygame.Rect(CX - cw - gap // 2, top, cw, chh)
@@ -348,19 +350,30 @@ class SettingsScreen:
         widgets.draw_switch(screen, th, x, y, on)
 
     def _draw_close(self, screen, th) -> None:
-        r = pygame.Rect(CX - 32, SIZE - 34 - 64, 64, 64)
-        pygame.draw.circle(screen, th["surface2"], r.center, 32)
-        c = r.center
-        col = th["muted"]
-        pygame.draw.line(screen, col, (c[0] - 11, c[1] - 11), (c[0] + 11, c[1] + 11), 5)
-        pygame.draw.line(screen, col, (c[0] + 11, c[1] - 11), (c[0] - 11, c[1] + 11), 5)
-        self._rects["close"] = r
+        self._rects["close"] = widgets.close_button(screen, th)
 
     # --------------------------------------------------------- dial overlay
 
     def _draw_dial(self, screen, th) -> None:
         self._scrim(screen)
-        C, CYD, R, LR = CX, 472, 224, 224 - 38
+        C, CYD, R, LR = CX, _DIAL_CY, 224, 224 - 38
+
+        # editable HH : MM readout at the top (over the dimmed/blurred scrim, so
+        # the inactive segments use a light colour; the active one gets a chip).
+        ry = 110
+        seg_w = 90
+        hr = pygame.Rect(CX - seg_w - 18, ry - 36, seg_w, 72)
+        mr = pygame.Rect(CX + 18, ry - 36, seg_w, 72)
+        for r, s, field in [(hr, f"{self._dh:02d}", "h"), (mr, f"{self._dm:02d}", "m")]:
+            on = self._dfield == field
+            if on:
+                pygame.draw.rect(screen, th["surface"], r, border_radius=14)
+            self._text(screen, s, 58, 900, th["ink"] if on else (238, 246, 252), center=r.center)
+        self._text(screen, ":", 54, 900, (238, 246, 252), center=(CX, ry))
+        self._rects["dial_seg_h"] = hr
+        self._rects["dial_seg_m"] = mr
+
+        # dial face
         pygame.draw.circle(screen, th["surface"], (C, CYD), R)
         pygame.draw.circle(screen, th["ring"], (C, CYD), R, 2)
 
@@ -392,30 +405,8 @@ class SettingsScreen:
         self._text(screen, "Set", 27, 800, (255, 255, 255), center=(C, CYD))
         self._rects["dial_set"] = pygame.Rect(C - 54, CYD - 54, 108, 108)
 
-        # cancel ✕ (top) — translucent circle drawn via an alpha surface
-        cr = pygame.Rect(CX - 24, 24, 48, 48)
-        self._alpha_circle(screen, cr.center, 24, (255, 255, 255, 40))
-        self._glyph_x(screen, cr.centerx, cr.centery, 18, (255, 255, 255), 4)
-        self._rects["dial_cancel"] = cr
-
-        # readout HH : MM (below the cancel button)
-        ry = 116
-        hh = f"{self._dh:02d}"
-        mm = f"{self._dm:02d}"
-        seg_w = 90
-        hr = pygame.Rect(CX - seg_w - 18, ry - 36, seg_w, 72)
-        mr = pygame.Rect(CX + 18, ry - 36, seg_w, 72)
-        for r, s, field in [(hr, hh, "h"), (mr, mm, "m")]:
-            on = self._dfield == field
-            if on:
-                pygame.draw.rect(screen, th["surface"], r, border_radius=14)
-            self._text(screen, s, 58, 900, th["ink"], center=r.center)
-        self._text(screen, ":", 54, 900, th["ink"], center=(CX, ry))
-        self._rects["dial_seg_h"] = hr
-        self._rects["dial_seg_m"] = mr
-
-        hint = "Drag to set the hour" if is_h else "Drag to set the minutes"
-        self._text(screen, hint, 16, 700, th["muted"], center=(CX, 196))
+        # cancel button (bottom) — identical to the main close button
+        self._rects["dial_cancel"] = widgets.close_button(screen, th)
 
     # -------------------------------------------------------- audio overlay
 
@@ -451,15 +442,7 @@ class SettingsScreen:
     def _scrim(self, screen) -> None:
         widgets.scrim(screen, size=SIZE)
 
-    # ---- procedural glyphs (Nunito has no ♪ / ✓ / ✕ symbols) -------------
-
-    def _alpha_circle(self, screen, center, r, rgba) -> None:
-        widgets.alpha_circle(screen, center, r, rgba)
-
-    def _glyph_x(self, screen, cx, cy, size, color, width) -> None:
-        h = size // 2
-        pygame.draw.line(screen, color, (cx - h, cy - h), (cx + h, cy + h), width)
-        pygame.draw.line(screen, color, (cx + h, cy - h), (cx - h, cy + h), width)
+    # ---- procedural glyphs (Nunito has no ♪ / ✓ symbols) -----------------
 
     def _glyph_check(self, screen, cx, cy, size, color, width) -> None:
         pygame.draw.lines(screen, color, False, [

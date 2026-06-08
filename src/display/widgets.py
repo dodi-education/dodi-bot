@@ -45,11 +45,37 @@ def event_xy(event, size: int = SIZE):
     return None
 
 
-def scrim(screen, rgba=(12, 24, 36, 128), size: int = SIZE) -> None:
-    """Dim the whole screen behind a modal sheet."""
+def scrim(screen, rgba=(12, 24, 36, 128), size: int = SIZE, blur: bool = True) -> None:
+    """Blur + dim the whole screen behind a modal sheet.
+
+    The blur is a cheap gaussian-ish softening (downscale then upscale with
+    bilinear filtering) approximating the design's ``backdrop-filter: blur(3px)``
+    — subtle, the backdrop stays recognizable. The ``rgba`` dim is kept on top.
+    """
+    if blur:
+        small = pygame.transform.smoothscale(screen, (size // 4, size // 4))
+        screen.blit(pygame.transform.smoothscale(small, (size, size)), (0, 0))
     s = pygame.Surface((size, size), pygame.SRCALPHA)
-    s.fill(rgba)
+    s.fill(rgba)  # alpha 128 == design's rgba(12,24,36,.5)
     screen.blit(s, (0, 0))
+
+
+CLOSE_SIZE = 85    # bottom-centre dismiss button (was 64; +1/3)
+CLOSE_MARGIN = 34  # gap from the bottom edge of the round screen
+
+
+def close_button(screen, th) -> pygame.Rect:
+    """Bottom-centre round dismiss button with a Tabler ✕. Returns its rect.
+
+    Shared by the alarm screen, the dial overlay's cancel, and system settings
+    so the close affordance is identical everywhere.
+    """
+    from . import icons  # local import avoids any import cycle with icons
+    r = pygame.Rect(CX - CLOSE_SIZE // 2, SIZE - CLOSE_MARGIN - CLOSE_SIZE,
+                    CLOSE_SIZE, CLOSE_SIZE)
+    pygame.draw.circle(screen, th["surface2"], r.center, CLOSE_SIZE // 2)
+    icons.blit(screen, "x", r.centerx, r.centery, 35, th["muted"])
+    return r
 
 
 def alpha_circle(screen, center, r, rgba) -> None:
