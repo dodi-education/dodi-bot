@@ -146,12 +146,18 @@ class _FakeAvatar:
         self.touch_event = threading.Event()
         self.mode = None
         self.closed = False
+        self.active_alarm = None
+        self.active_alarm_history = []  # every set_active_alarm() value, in order
 
     def set_mode(self, m):
         self.mode = m
 
     def close_settings(self):
         self.closed = True
+
+    def set_active_alarm(self, info):
+        self.active_alarm = info
+        self.active_alarm_history.append(info)
 
 
 class _FakeDodi:
@@ -182,6 +188,25 @@ def test_alarm_ring_one_time_deactivates_and_saves():
     assert len(saves) == 1                                          # persisted
     assert mgr.is_ringing() is False                               # back to idle
     assert av.closed is True                                       # settings force-closed
+
+
+def test_alarm_ring_pins_active_alarm_then_clears():
+    settings = {"alarm": {
+        "stop_alarm_touch": True,
+        "one_time_alarm": {"active": True, "time": "06:00", "audio": None},
+        "schedule": {},
+    }}
+    av = _FakeAvatar()
+    mgr = AlarmManager(settings, av, _FakeDodi(_FakeAO()), lambda s: None)
+
+    threading.Thread(target=lambda: (time.sleep(0.15), av.touch_event.set()), daemon=True).start()
+    mgr._ring({"time": "06:00", "audio": None, "once": True, "day": None})
+
+    # While ringing the clock is pinned to this alarm, labelled "Today" (so it
+    # never flips to "Tomorrow" once the minute passes); cleared on dismissal.
+    assert {"time": "06:00", "label": "Today", "once": True, "day": None} \
+        in av.active_alarm_history
+    assert av.active_alarm is None
 
 
 # ------------------------------------------------ alarm volume + ascending ramp

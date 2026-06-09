@@ -144,6 +144,15 @@ class AlarmManager:
         set_brightness(100)
         if self._avatar is not None:
             self._avatar.set_mode(DisplayMode.CLOCK)
+            # Pin the ringing alarm on the clock's next-alarm line: it stays
+            # "Today" for the whole ring instead of flipping to "Tomorrow" once
+            # the clock minute passes the alarm time.
+            self._avatar.set_active_alarm({
+                "time": due.get("time", "06:00"),
+                "label": "Today",
+                "once": bool(due.get("once")),
+                "day": due.get("day"),
+            })
             self._avatar.touch_event.clear()
 
         # Load + loop the audio (best-effort).
@@ -185,6 +194,11 @@ class AlarmManager:
         try:
             self._wait_for_dismissal()
         finally:
+            if self._avatar is not None:
+                try:
+                    self._avatar.set_active_alarm(None)
+                except Exception:
+                    pass
             if ao is not None:
                 try:
                     ao.interrupt()

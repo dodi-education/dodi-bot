@@ -142,6 +142,10 @@ class AvatarDisplay:
         self._mode = DisplayMode.AVATAR
         self._deaf = False
         self._active_overlay: str | None = None  # None | "alarm" | "system"
+        # While an alarm is ringing the AlarmManager pins it here (an nr-shaped
+        # dict) so the clock's next-alarm line keeps showing the current ring
+        # instead of rolling forward to "Tomorrow" once the minute ticks over.
+        self._active_alarm: dict | None = None
         self._clock_font: pygame.font.Font | None = None
         self._clock_sub_font: pygame.font.Font | None = None
         # Shared settings + persistence (bound by main(); used by the clock's
@@ -204,6 +208,18 @@ class AvatarDisplay:
         """Show/hide the headphones (DEAF mode). Safe to call from any thread."""
         with self._mode_lock:
             self._deaf = deaf
+
+    @property
+    def active_alarm(self) -> dict | None:
+        with self._mode_lock:
+            return self._active_alarm
+
+    def set_active_alarm(self, info: dict | None) -> None:
+        """Pin the currently-ringing alarm (an nr-shaped dict) so the clock's
+        next-alarm line keeps showing it for as long as it rings; pass ``None``
+        when it stops. Safe to call from any thread."""
+        with self._mode_lock:
+            self._active_alarm = info
 
     @property
     def settings_active(self) -> bool:
@@ -461,7 +477,7 @@ class AvatarDisplay:
         elif current_mode == DisplayMode.CLOCK:
             screen.fill((0, 0, 0))
             _draw_clock(screen, self._clock_font, self._clock_sub_font,
-                        self._alarm_cfg())
+                        self._alarm_cfg(), self.active_alarm)
         else:  # BLANK
             screen.fill((0, 0, 0))
 
@@ -770,8 +786,13 @@ class _AnimationState:
 # Drawing functions
 # ---------------------------------------------------------------------------
 
-def _draw_clock(screen, font, sub_font=None, alarm_cfg=None) -> None:
-    """Render the 24h time, plus a subtle next-alarm line at the bottom."""
+def _draw_clock(screen, font, sub_font=None, alarm_cfg=None, active_alarm=None) -> None:
+    """Render the 24h time, plus a subtle next-alarm line at the bottom.
+
+    While an alarm is ringing, ``active_alarm`` pins that ring (an nr-shaped
+    dict) so the line keeps showing it instead of rolling to "Tomorrow" once
+    the clock ticks past the alarm minute.
+    """
     if font is None:
         return
     text = _dt.datetime.now().strftime("%H:%M")
@@ -780,9 +801,9 @@ def _draw_clock(screen, font, sub_font=None, alarm_cfg=None) -> None:
     screen.blit(surface, rect)
 
     # Subtle next-alarm indicator: [alarm icon]  Today · 06:30
-    if sub_font is None or not alarm_cfg:
+    if sub_font is None:
         return
-    nr = next_ring(alarm_cfg, _dt.datetime.now())
+    nr = active_alarm or (next_ring(alarm_cfg, _dt.datetime.now()) if alarm_cfg else None)
     if nr is None:
         return
     muted = (120, 132, 146)
