@@ -18,12 +18,17 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Callable, Optional
 
+from network import wifi as wifi_mod
+
 from .display_power import set_brightness, set_power
 from .schedule import Block, next_session_for
 
 logger = logging.getLogger("DODI.night_mode")
 
 _TICK_SECONDS = 5.0
+# Re-enable Wi-Fi this many seconds before a night session ends, so a configured
+# weather service has time to fetch fresh data before night mode lifts.
+_WIFI_WAKE_LEAD = 60.0
 
 
 class NightModeState(Enum):
@@ -79,6 +84,11 @@ class NightModeManager:
                 display_cfg = {"mode": "time", "brightness": 100}
         self._display_mode = display_cfg.get("mode", "time")
         self._brightness = int(display_cfg.get("brightness", 100))
+
+        # Disable Wi-Fi during the session (re-enabled before it ends). Live-toggled
+        # from the settings UI via apply_setting("night_mode.disable_wifi", ...).
+        self._disable_wifi = bool(self._config.get("disable_wifi", False))
+        self._saved_ssid: Optional[str] = None
 
         self._state = NightModeState.OFF
         self._state_changed = threading.Event()
@@ -229,6 +239,52 @@ class NightModeManager:
         except Exception as e:
             logger.warning(f"Could not stop audio input: {e}")
 
+    def _internet_wifi_enabled(self) -> bool:
+        """True unless the user globally disabled Wi-Fi in the Internet settings.
+
+        Reads the live settings dict so a mid-session toggle is respected (we must
+        never bring Wi-Fi back up when the user has globally turned it off).
+        """
+        try:
+            return not bool(
+                self._dodi.settings.get("internet", {}).get("disable_wifi", False)
+            )
+        except Exception:
+            return True
+
+    def _disable_wifi_for_session(self) -> bool:
+        """Turn Wi-Fi off for this night session. Returns True if we turned it off."""
+        if not (self._disable_wifi and self._internet_wifi_enabled()):
+            return False
+        try:
+            self._saved_ssid = wifi_mod.active_ssid()
+            wifi_mod.radio_off()
+            logger.info("Night mode: Wi-Fi disabled (was on %s)", self._saved_ssid)
+            return True
+        except Exception as e:
+            logger.warning(f"Night mode: could not disable Wi-Fi: {e}")
+            return False
+
+    def _wake_wifi_for_session(self) -> None:
+        """Re-enable Wi-Fi + reconnect the saved network, then nudge a weather refresh."""
+        if not self._internet_wifi_enabled():
+            return  # user globally disabled Wi-Fi while the session was running
+        try:
+            wifi_mod.radio_on()
+            if self._saved_ssid:
+                # Block (briefly) until associated so the forecast fetch below sees
+                # an online link; NM would also autoconnect, but this is deterministic.
+                wifi_mod.connect(self._saved_ssid, timeout=20.0)
+            # Zero the weather throttle so the main loop fetches on its next tick
+            # (it keeps ticking even while night mode preempts the conversation).
+            try:
+                self._dodi._last_weather_kick = 0.0
+            except Exception:
+                pass
+            logger.info("Night mode: Wi-Fi re-enabled before session end")
+        except Exception as e:
+            logger.warning(f"Night mode: could not re-enable Wi-Fi: {e}")
+
     def _enter_session(self, session: Block) -> None:
         """Hold inside a night-mode session until its end_dt, showing the display."""
         logger.info(f"Entering night mode (until {session.end_dt})")
@@ -238,13 +294,26 @@ class NightModeManager:
         if self._avatar is not None:
             self._avatar.touch_event.clear()
 
+        wifi_off = self._disable_wifi_for_session()
+        woke = False
+
         try:
             while not self._stop.is_set():
                 now = self._time_provider()
                 if now >= session.end_dt:
                     break
+                # Re-enable Wi-Fi shortly before the session ends so a configured
+                # weather service can fetch fresh data before night mode lifts.
+                if (wifi_off and not woke
+                        and (session.end_dt - now).total_seconds() <= _WIFI_WAKE_LEAD):
+                    self._wake_wifi_for_session()
+                    woke = True
                 # Poll so NTP jumps and stop() are picked up quickly.
                 self._stop.wait(timeout=_TICK_SECONDS)
         finally:
+            # Sessions shorter than the lead, or a mid-session stop()/disable, still
+            # need Wi-Fi restored on exit (unless globally disabled in Internet).
+            if wifi_off and not woke:
+                self._wake_wifi_for_session()
             self._restore_display()
             self._set_state(NightModeState.OFF)

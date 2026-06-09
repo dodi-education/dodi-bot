@@ -438,7 +438,6 @@ A common cause is the display being held by something else — make sure no manu
 ## TODO
 
 - Fix sound lags
-- Fix UI bugs
 
 ## License
 

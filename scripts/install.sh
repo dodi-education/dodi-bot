@@ -365,14 +365,6 @@ else
 fi
 echo ""
 
-# ============================================
-# Step 3: Detect and Install Seeed Voice Card
-# ============================================
-echo -e "${BLUE}[3/8] Checking Seeed Voice Card driver...${NC}"
-
-SEEED_INSTALLED=false
-SEEED_WORKING=false
-
 # Determine boot config location (changed in newer Pi OS)
 if [ -d "/boot/firmware" ]; then
     BOOT_DIR="/boot/firmware"
@@ -381,6 +373,36 @@ else
 fi
 OVERLAY_DIR="$BOOT_DIR/overlays"
 CONFIG_FILE="$BOOT_DIR/config.txt"
+
+# Onboard LEDs glow in a dark bedroom; DODI is a bedside device, so disable
+# the green activity (ACT) and red power (PWR) LEDs at boot. These dtparams
+# park each LED's trigger and force it off — config.txt is the persistent,
+# no-runtime-permissions way to do this on the Pi 4.
+LED_MARKER="# DODI: disable onboard LEDs"
+if ! grep -qF "$LED_MARKER" "$CONFIG_FILE" 2>/dev/null; then
+    echo -e "  [~] Disabling onboard ACT/PWR LEDs in config.txt..."
+    {
+        echo ""
+        echo "$LED_MARKER"
+        echo "dtparam=act_led_trigger=none"
+        echo "dtparam=act_led_activelow=off"
+        echo "dtparam=pwr_led_trigger=none"
+        echo "dtparam=pwr_led_activelow=off"
+    } >> "$CONFIG_FILE"
+    echo -e "  [+] Onboard LEDs will be off after reboot"
+    NEED_REBOOT=true
+else
+    echo -e "  [+] Onboard LEDs already disabled in config.txt"
+fi
+echo ""
+
+# ============================================
+# Step 3: Detect and Install Seeed Voice Card
+# ============================================
+echo -e "${BLUE}[3/8] Checking Seeed Voice Card driver...${NC}"
+
+SEEED_INSTALLED=false
+SEEED_WORKING=false
 
 # Get kernel version for selecting the correct driver branch
 # HinTak's fork provides kernel-specific branches (v6.6, v6.12, etc.)

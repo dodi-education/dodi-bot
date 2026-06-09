@@ -60,6 +60,7 @@ from night_mode import NightModeManager
 from night_mode.display_power import set_brightness, set_power
 from alarm.manager import AlarmManager
 from network import weather as weather_mod
+from network import wifi as wifi_mod
 from network.weather import WeatherController
 from settings_store import load_settings, save_settings
 
@@ -184,8 +185,33 @@ class DODI:
                 mgr = self._night_mode
                 if mgr is not None:
                     mgr.set_enabled(bool(value))      # live start/stop of the scheduler
+            elif key == "night_mode.disable_wifi":
+                mgr = self._night_mode
+                if mgr is not None:
+                    # Applies on the next session transition (the manager re-reads it).
+                    mgr._disable_wifi = bool(value)
+            elif key == "internet.disable_wifi":
+                self._apply_wifi_disabled(bool(value))
         except Exception as e:
             logger.warning(f"apply_setting({key!r}) failed: {e}")
+
+    def _apply_wifi_disabled(self, disabled: bool) -> None:
+        """Power the Wi-Fi radio off/on to match the Internet 'Disable Wi-Fi' setting.
+
+        Disabling cuts all internet (the streaming assistant included). Enabling
+        re-activates the radio, reconnects the last network, and nudges a weather
+        refresh. We don't fight an active night session that wants Wi-Fi off.
+        """
+        if disabled:
+            wifi_mod.radio_off()
+            return
+        night = self._night_mode
+        if night is not None and night.is_active() and getattr(night, "_disable_wifi", False):
+            return  # night mode is intentionally holding Wi-Fi off
+        # radio_on() is fast and NetworkManager auto-reconnects saved profiles; we do
+        # NOT block this (UI) thread on connect(). Nudge a weather refresh once back.
+        wifi_mod.radio_on()
+        self._last_weather_kick = 0.0  # let the loop fetch a fresh forecast promptly
 
     def load_persona(self) -> str:
         """Load the active persona text (used as the AI system prompt)."""
@@ -648,6 +674,12 @@ def main() -> int:
         dodi._night_mode = NightModeManager(night_cfg, dodi._avatar, dodi)
         dodi._night_mode.start()
         print("  [+] Night mode " + ("enabled" if night_cfg.get("enabled") else "ready (disabled)"))
+
+    # Reconcile the Wi-Fi radio with the saved Internet setting. NetworkManager
+    # persists the radio state across reboots, so honor a disabled setting on boot.
+    if settings.get("internet", {}).get("disable_wifi", False):
+        wifi_mod.radio_off()
+        print("  [+] Wi-Fi disabled (Internet setting)")
 
     # Alarm engine (decoupled from night mode; reads the `alarm` config block)
     if settings.get("alarm") is not None:

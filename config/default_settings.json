@@ -37,6 +37,9 @@
     "lon": null,
     "lat": null
   },
+  "internet": {
+    "disable_wifi": false
+  },
   "power_options": {
     "turn_off_display": 60,
     "turn_off_display_night_mode": 3,
@@ -45,6 +48,7 @@
   "night_mode": {
     "enabled": true,
     "deactivate_sst": true,
+    "disable_wifi": false,
     "display": {
       "mode": "time",
       "brightness": 10

@@ -36,6 +36,8 @@ CX = SIZE // 2
 CARD_W = 452
 CARD_X = CX - CARD_W // 2          # 174 — same horizontal inset as the alarm cards
 
+DANGER = (210, 85, 63)            # #d2553f — destructive accent (Shut down) from the design
+
 # (id, label, tabler-icon) — matches the design's SECTIONS.
 SECTIONS = [
     ("general", "General", "volume"),
@@ -109,6 +111,7 @@ class SystemSettingsScreen:
         self._kb_shift = False
         self._loc_query = ""
         self._wifi_status = None       # last-known connected SSID (nav-row status)
+        self._confirm = None           # None | 'restart' | 'shutdown' (power confirm dialog)
 
     # ---------------------------------------------------------------- state
 
@@ -171,6 +174,7 @@ class SystemSettingsScreen:
         valid = {sid for sid, _, _ in SECTIONS}
         self.section = section if section in valid else "general"
         self.sub = None
+        self._confirm = None
         self._drag = None
         self._sched_edit = None
         self._wifi_target = None
@@ -210,6 +214,20 @@ class SystemSettingsScreen:
 
         xy = widgets.event_xy(event, SIZE)
         if xy is None:
+            return
+
+        # Modal power-confirm dialog owns all input while open.
+        if self._confirm is not None:
+            if down:
+                if self._hit("confirm_cancel", xy):
+                    self._confirm = None
+                elif self._hit("confirm_go", xy):
+                    action, self._confirm = self._confirm, None
+                    import system_control
+                    if action == "restart":
+                        system_control.reboot()
+                    elif action == "shutdown":
+                        system_control.shutdown()
             return
 
         if self.sub is not None:
@@ -269,6 +287,12 @@ class SystemSettingsScreen:
             self._set(("alarm", "ascending_volume", "active"), not cur)
 
     def _event_power(self, xy) -> None:
+        if self._hit("btn_restart", xy):
+            self._confirm = "restart"
+            return
+        if self._hit("btn_shutdown", xy):
+            self._confirm = "shutdown"
+            return
         for mem_key, path, opts in (
             ("off_day", ("power_options", "turn_off_display"), SECONDS_OPTS),
             ("off_night", ("power_options", "turn_off_display_night_mode"), NIGHT_SECS_OPTS),
@@ -300,12 +324,20 @@ class SystemSettingsScreen:
             cur = bool(self._get(("night_mode", "enabled"), False))
             self._set(("night_mode", "enabled"), not cur, apply_key="night_mode.enabled")
             return
+        if self._hit("switch_disable_wifi_night", xy):
+            cur = bool(self._get(("night_mode", "disable_wifi"), False))
+            self._set(("night_mode", "disable_wifi"), not cur, apply_key="night_mode.disable_wifi")
+            return
         if self._hit("nav_schedule", xy):
             self.sub = "schedule"
             self._sched_edit = None
             return
 
     def _event_internet(self, xy) -> None:
+        if self._hit("switch_disable_wifi", xy):
+            cur = bool(self._get(("internet", "disable_wifi"), False))
+            self._set(("internet", "disable_wifi"), not cur, apply_key="internet.disable_wifi")
+            return
         if self._hit("nav_wifi", xy):
             self.sub = "wifi"
             self._wifi_target = None
@@ -340,6 +372,43 @@ class SystemSettingsScreen:
             self._draw_wifi(screen, th)
         elif self.sub == "location":
             self._draw_location(screen, th)
+
+        if self._confirm is not None:
+            self._draw_confirm(screen, th)
+
+    def _draw_confirm(self, screen, th) -> None:
+        """Centered Restart/Shut-down confirmation dialog (from the design)."""
+        widgets.scrim(screen)
+        is_shut = self._confirm == "shutdown"
+        color = DANGER if is_shut else theme.ACCENT
+        icon = "power" if is_shut else "refresh"
+        title = "Shut down Dodi?" if is_shut else "Restart Dodi?"
+        sub = ("Dodi will power off and stop all alarms." if is_shut
+               else "Dodi will reboot in a few seconds.")
+
+        cw, ch = 440, 300
+        card = pygame.Rect(CX - cw // 2, CX - ch // 2, cw, ch)
+        pygame.draw.rect(screen, th["surface"], card, border_radius=32)
+
+        cyc = card.y + 66
+        widgets.alpha_circle(screen, (CX, cyc), 42, (*color, 36))
+        icons.blit(screen, icon, CX, cyc, 40, color)
+        widgets.text(screen, title, 25, 900, th["ink"], center=(CX, card.y + 138))
+        widgets.text(screen, sub, 15, 600, th["muted"], center=(CX, card.y + 172))
+
+        gap = 14
+        bw = (cw - 22 * 2 - gap) // 2
+        bh = 56
+        by = card.bottom - 22 - bh
+        cancel = pygame.Rect(card.x + 22, by, bw, bh)
+        go = pygame.Rect(cancel.right + gap, by, bw, bh)
+        pygame.draw.rect(screen, th["ring"], cancel, width=2, border_radius=18)
+        widgets.text(screen, "Cancel", 18, 800, th["muted"], center=cancel.center)
+        pygame.draw.rect(screen, color, go, border_radius=18)
+        widgets.text(screen, "Shut down" if is_shut else "Restart", 18, 800,
+                     (255, 255, 255), center=go.center)
+        self._rects["confirm_cancel"] = cancel
+        self._rects["confirm_go"] = go
 
     def _draw_title(self, screen, th) -> None:
         widgets.text(screen, "SETTINGS", 16, 800, th["muted"], center=(CX, 88))
@@ -457,9 +526,19 @@ class SystemSettingsScreen:
         widgets.draw_switch(screen, th, c.right - 22 - 74, c.centery - 21, on)
         self._rects["switch_ascending"] = pygame.Rect(c.right - 22 - 74, c.centery - 21, 74, 42)
 
+    def _power_button(self, screen, th, x, y, w, h, icon, label, color, key) -> None:
+        """An outlined action button (icon over label) used by the Power section."""
+        r = pygame.Rect(x, y, w, h)
+        pygame.draw.rect(screen, th["surface"], r, border_radius=20)
+        pygame.draw.rect(screen, color, r, width=2, border_radius=20)
+        icons.blit(screen, icon, r.centerx, r.centery - 12, 26, color)
+        widgets.text(screen, label, 16, 800, color, center=(r.centerx, r.centery + 18))
+        self._rects[key] = r
+
     def _draw_power(self, screen, th) -> None:
         gap = 14
-        y = self._stack_top(148 * 2 + gap)
+        btn_h = 72
+        y = self._stack_top(148 * 2 + gap * 2 + btn_h)
         for mem_key, path, opts, icon, label in (
             ("off_day", ("power_options", "turn_off_display"), SECONDS_OPTS, "device-desktop", "Turn off display"),
             ("off_night", ("power_options", "turn_off_display_night_mode"), NIGHT_SECS_OPTS, "moon", "Display off at night"),
@@ -476,10 +555,17 @@ class SystemSettingsScreen:
             self._stepper(screen, th, mem_key, c.right - 22, c.y + 104, shown, opts, enabled=enabled)
             y += 148 + gap
 
+        # Restart (accent) + Shut down (danger) action buttons.
+        bw = (CARD_W - gap) // 2
+        self._power_button(screen, th, CARD_X, y, bw, btn_h, "refresh", "Restart",
+                           theme.ACCENT, "btn_restart")
+        self._power_button(screen, th, CARD_X + bw + gap, y, bw, btn_h, "power", "Shut down",
+                           DANGER, "btn_shutdown")
+
     def _draw_night(self, screen, th) -> None:
         gap = 14
-        heights = [88, 120, 78]
-        y = self._stack_top(sum(heights) + gap * 2)
+        heights = [88, 120, 88, 78]
+        y = self._stack_top(sum(heights) + gap * 3)
 
         on = bool(self._get(("night_mode", "enabled"), False))
         c = self._card(screen, th, y, 88)
@@ -495,6 +581,14 @@ class SystemSettingsScreen:
         self._slider(screen, th, "night_bri", c, c.y + 82, bri, 1, 100)
         y += 120 + gap
 
+        dw = bool(self._get(("night_mode", "disable_wifi"), False))
+        c = self._card(screen, th, y, 88)
+        self._head(screen, th, c, "wifi-off", "Disable Wi-Fi at night", c.centery,
+                   sub="Quieter, lower power")
+        widgets.draw_switch(screen, th, c.right - 22 - 74, c.centery - 21, dw)
+        self._rects["switch_disable_wifi_night"] = pygame.Rect(c.right - 22 - 74, c.centery - 21, 74, 42)
+        y += 88 + gap
+
         sched = self._get(("night_mode", "schedule"), {}) or {}
         ndays = sum(1 for d in DAYS if sched.get(d))
         self._nav_row(screen, th, y, 78, "calendar", "Schedule",
@@ -502,17 +596,32 @@ class SystemSettingsScreen:
 
     def _draw_internet(self, screen, th) -> None:
         gap = 14
-        y = self._stack_top(78 * 2 + gap)
-        snap = self._wifi.snapshot()
-        connected = next((n.ssid for n in snap["networks"] if n.in_use), None) or self._wifi_status
-        if connected:
-            status, sub = connected, "Connected"
-        elif snap["scan_state"] in ("idle", "scanning"):
-            status, sub = "…", "Connected network"
-        else:
-            status, sub = "Not connected", "Connected network"
-        self._nav_row(screen, th, y, 78, "wifi", "Wi-Fi", sub, status, "nav_wifi")
-        y += 78 + gap
+        enabled = not bool(self._get(("internet", "disable_wifi"), False))
+        total = 88 + gap + (78 + gap if enabled else 0) + 78
+        y = self._stack_top(total)
+
+        # Wi-Fi master toggle (off => radio powered down, network row hidden).
+        c = self._card(screen, th, y, 88)
+        self._head(screen, th, c, "wifi" if enabled else "wifi-off", "Wi-Fi",
+                   c.centery, sub="On" if enabled else "Disabled")
+        sw_x = c.right - 22 - 74
+        widgets.draw_switch(screen, th, sw_x, c.centery - 21, enabled)
+        self._rects["switch_disable_wifi"] = pygame.Rect(sw_x, c.centery - 21, 74, 42)
+        y += 88 + gap
+
+        # Network selection — hidden while Wi-Fi is disabled.
+        if enabled:
+            snap = self._wifi.snapshot()
+            connected = next((n.ssid for n in snap["networks"] if n.in_use), None) or self._wifi_status
+            if connected:
+                status, sub = connected, "Connected"
+            elif snap["scan_state"] in ("idle", "scanning"):
+                status, sub = "…", "Connected network"
+            else:
+                status, sub = "Not connected", "Connected network"
+            self._nav_row(screen, th, y, 78, "search", "Network", sub, status, "nav_wifi")
+            y += 78 + gap
+
         loc = self._get(("weather", "location_name"), "None")
         self._nav_row(screen, th, y, 78, "map-pin", "Location", "For weather forecast",
                       loc, "nav_location")

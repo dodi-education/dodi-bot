@@ -123,6 +123,36 @@ def active_ssid() -> str | None:
     return None
 
 
+def set_radio(on: bool, timeout: float = 10.0) -> bool:
+    """Power the Wi-Fi radio on/off via ``sudo -n nmcli radio wifi on|off``.
+
+    Best-effort: returns True on success. NetworkManager persists the radio state
+    across reboots and auto-reconnects to saved networks when turned back on, so
+    callers that need a specific network up can follow this with :func:`connect`.
+    """
+    state = "on" if on else "off"
+    try:
+        cp = _run(["sudo", "-n", "nmcli", "radio", "wifi", state], timeout=timeout)
+    except Exception as e:
+        logger.warning("wifi radio %s failed: %s", state, e)
+        return False
+    if cp.returncode != 0:
+        logger.warning("wifi radio %s failed: %s", state, cp.stderr.strip())
+        return False
+    logger.info("Wi-Fi radio turned %s", state)
+    return True
+
+
+def radio_on(timeout: float = 10.0) -> bool:
+    """Turn the Wi-Fi radio on."""
+    return set_radio(True, timeout)
+
+
+def radio_off(timeout: float = 10.0) -> bool:
+    """Turn the Wi-Fi radio off."""
+    return set_radio(False, timeout)
+
+
 def _classify_error(stderr: str) -> str:
     s = (stderr or "").lower()
     if "secrets were required" in s or "802-11-wireless-security" in s or "no key available" in s:
