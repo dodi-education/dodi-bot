@@ -8,6 +8,7 @@ from typing import Optional
 import sounddevice as sd
 import numpy as np
 
+from . import cpu_governor
 from .volume import scale_volume, apply_volume_ramp
 from .speaker_mute import SpeakerMute
 
@@ -29,7 +30,9 @@ def _silence(n: int, like: np.ndarray) -> np.ndarray:
     return np.zeros(shape, dtype=like.dtype)
 
 
-def _apply_fades(audio: np.ndarray, rate: int, fade_ms: float = 15.0) -> np.ndarray:
+def _apply_fades(
+    audio: np.ndarray, rate: int, fade_ms: float = 15.0, fade_out: bool = True
+) -> np.ndarray:
     """Ramp the first/last few ms of the buffer to remove the start/end click.
 
     On this Pi's WM8960 the speaker pops when the first sample steps from zero
@@ -37,6 +40,10 @@ def _apply_fades(audio: np.ndarray, rate: int, fade_ms: float = 15.0) -> np.ndar
     pop; the matching fade-out keeps loop seams (loop=True) and the buffer end
     click-free too. Verified empirically: a 15ms cosine-onset test played
     click-free while a hard 0->peak onset clicked.
+
+    fade_out=False applies only the leading fade — used when the tail is spliced
+    onto more audio (the ascending-ramp prefix) and a trailing dip would create
+    a seam.
     """
     n = audio.shape[0]
     f = min(int(rate * fade_ms / 1000.0), n // 2)
@@ -47,7 +54,8 @@ def _apply_fades(audio: np.ndarray, rate: int, fade_ms: float = 15.0) -> np.ndar
     if audio.ndim > 1:  # stereo/multichannel: broadcast ramp across channels
         ramp = ramp[:, np.newaxis]
     audio[:f] = (audio[:f].astype(np.float32) * ramp).astype(audio.dtype)
-    audio[-f:] = (audio[-f:].astype(np.float32) * ramp[::-1]).astype(audio.dtype)
+    if fade_out:
+        audio[-f:] = (audio[-f:].astype(np.float32) * ramp[::-1]).astype(audio.dtype)
     return audio
 
 
@@ -87,6 +95,7 @@ class AudioOutput:
         self._stream_buf = bytearray()
         self._stream_lock = threading.Lock()
         self._stream_channels = 1
+        self._stream_underruns = 0  # PortAudio output_underflow count (logged)
 
     def play(
         self,
@@ -116,13 +125,18 @@ class AudioOutput:
             self._playing = True
             self._interrupt_flag.clear()
 
+        # Pin the CPU governor to 'performance' for the whole playback. On the Pi
+        # the 'ondemand' governor downclocks into the near-idle steady state of
+        # playback and the DVFS transition starves PortAudio's callback, causing
+        # a one-off dropout a few seconds in. Restored in finally. Best-effort.
+        cpu_governor.acquire()
         try:
-            # Steady-state buffer (post-ramp / no-ramp): today's exact behavior.
+            # Steady-state buffer (post-ramp / no-ramp): scaled to volume, faded.
             audio_max = _apply_fades(scale_volume(audio_data, self.volume), rate)
             n_audio = audio_data.shape[0]
 
-            # Ascending-volume setup. We scale a faded, full-amplitude copy by the
-            # absolute ramp percent each iteration, so the envelope rides on the
+            # Ascending-volume setup. The ramp scales a faded, full-amplitude
+            # copy by the absolute ramp percent, so the envelope rides on the
             # same fade shape as audio_max and lands exactly on it when the ramp
             # finishes (amplitude-continuous, no seam pop). `offset` counts only
             # REAL audio samples — the silent preroll must not advance the ramp.
@@ -131,15 +145,43 @@ class AudioOutput:
                 start_pct, duration_s = ramp
                 ramp_active = duration_s > 0 and start_pct < self.volume
             if ramp_active:
-                faded_full = _apply_fades(audio_data.astype(np.int16, copy=True), rate)
                 duration_samples = int(duration_s * rate)
                 offset = 0
+                # The ramp only modifies the first `duration_samples` of audio;
+                # past that the buffer is byte-identical to audio_max. For a long
+                # clip with a short ramp (e.g. a 5-min alarm, 8s ramp) we ramp
+                # ONLY that prefix and reuse audio_max for the tail, instead of
+                # re-processing the whole clip (which cost ~2.4s and a ~130MB
+                # allocation storm, and pinned the CPU high right before it
+                # downclocked). The full-clip faded copy is built only when the
+                # ramp spans the whole clip (a short clip still ascending across
+                # loops), where processing it is cheap anyway.
+                faded_full = (
+                    _apply_fades(audio_data.astype(np.int16, copy=True), rate)
+                    if duration_samples >= n_audio
+                    else None
+                )
 
             def _ramped(off: int) -> np.ndarray:
-                return apply_volume_ramp(
-                    faded_full, rate, start_pct, self.volume, duration_s,
-                    offset_samples=off,
-                )
+                if faded_full is not None:  # whole-clip ramp (short clip)
+                    return apply_volume_ramp(
+                        faded_full, rate, start_pct, self.volume, duration_s,
+                        offset_samples=off,
+                    )
+                # Prefix ramp: ramp [0:span] of this iteration's audio and reuse
+                # audio_max for the rest (which is already at full volume).
+                out = audio_max.copy()
+                span = min(duration_samples - off, n_audio)
+                if span > 0:
+                    region = _apply_fades(
+                        audio_data[:span].astype(np.int16, copy=False), rate,
+                        fade_out=False,
+                    )
+                    out[:span] = apply_volume_ramp(
+                        region, rate, start_pct, self.volume, duration_s,
+                        offset_samples=off,
+                    )
+                return out
 
             # Mute the speaker amp before opening the PCM so the codec's analog
             # open-pop is inaudible; prepend silence and unmute partway through
@@ -156,6 +198,7 @@ class AudioOutput:
             )
             buf = first
             unmuted = False
+            uf_warned = False
 
             # One sd.play per loop iteration. Chunking the buffer and calling
             # sd.play+sd.wait per chunk tears down/reopens the ALSA stream
@@ -187,6 +230,15 @@ class AudioOutput:
                     if not unmuted and time.monotonic() - t0 >= _UNMUTE_AFTER_S:
                         self._mute.unmute()  # preroll is still playing -> silent
                         unmuted = True
+                    # Surface a callback underrun once (the startup-stutter
+                    # symptom); with the governor boost this should not fire.
+                    if not uf_warned:
+                        cb = sd._last_callback
+                        if cb is not None and cb.status.output_underflow:
+                            logger.warning(
+                                "Audio underrun during playback (output_underflow)"
+                            )
+                            uf_warned = True
                     if _interrupted():
                         return False
                     time.sleep(0.05)
@@ -222,6 +274,7 @@ class AudioOutput:
             return False
 
         finally:
+            cpu_governor.release()
             with self._lock:
                 self._playing = False
 
@@ -255,6 +308,7 @@ class AudioOutput:
         rate = sample_rate or self.sample_rate
         self.stop_stream()  # ensure a clean state
         self._stream_channels = channels
+        self._stream_underruns = 0
         with self._stream_lock:
             self._stream_buf = bytearray()
         # Open muted: the callback feeds silence until real PCM arrives, so the
@@ -274,6 +328,9 @@ class AudioOutput:
             logger.error(f"Could not open output stream: {e}")
             self._stream = None
             return
+        # Pin 'performance' for the session (see play() for why). Released in
+        # stop_stream(). Best-effort.
+        cpu_governor.acquire()
         with self._lock:
             self._playing = True
 
@@ -291,6 +348,8 @@ class AudioOutput:
                 del self._stream_buf[:n]
         if n < needed:
             outdata[n:] = b"\x00" * (needed - n)
+        if status and status.output_underflow:  # cheap counter, logged on stop
+            self._stream_underruns += 1
 
     def feed_stream(self, pcm_bytes: bytes) -> None:
         """Append a chunk of raw int16 PCM for playback (non-blocking)."""
@@ -326,6 +385,11 @@ class AudioOutput:
                 stream.close()
             except Exception:
                 pass
+            cpu_governor.release()  # balances the acquire() in start_stream
+            if self._stream_underruns:
+                logger.warning(
+                    "Stream had %d output underruns", self._stream_underruns
+                )
         with self._stream_lock:
             self._stream_buf = bytearray()
         with self._lock:

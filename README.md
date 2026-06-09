@@ -437,8 +437,6 @@ A common cause is the display being held by something else — make sure no manu
 
 ## TODO
 
-- Fix sound lags
-
 ## License
 
 MIT License — see the LICENSE file for details.
