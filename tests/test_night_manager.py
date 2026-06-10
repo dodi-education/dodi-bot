@@ -58,3 +58,52 @@ def test_enabled_at_boot_starts_on_start():
     assert mgr._thread is not None and mgr._thread.is_alive()
     mgr.set_enabled(False)
     assert mgr._thread is None
+
+
+# ---------------------------------------- display deference to a ringing alarm
+
+class _FakeAvatar:
+    def __init__(self):
+        self.mode = "UNSET"
+
+    def set_mode(self, m):
+        self.mode = m
+
+
+class _FakeAlarm:
+    def __init__(self, ringing):
+        self._ringing = ringing
+
+    def is_ringing(self):
+        return self._ringing
+
+
+class _FakeDodi:
+    def __init__(self, alarm):
+        self._alarm = alarm
+
+
+def _restore_mgr(monkeypatch, ringing):
+    """A manager wired to a fake alarm, with sysfs backlight calls stubbed out
+    (these tests run on the real Pi — never touch the actual display)."""
+    import night_mode.manager as nm
+    monkeypatch.setattr(nm, "set_power", lambda *a, **k: None)
+    monkeypatch.setattr(nm, "set_brightness", lambda *a, **k: None)
+    av = _FakeAvatar()
+    mgr = NightModeManager({"enabled": True, "schedule": {}}, avatar=av,
+                           dodi=_FakeDodi(_FakeAlarm(ringing=ringing)))
+    return mgr, av
+
+
+def test_restore_display_defers_to_ringing_alarm(monkeypatch):
+    # Night mode lifting under a ringing alarm must NOT grab the display back.
+    mgr, av = _restore_mgr(monkeypatch, ringing=True)
+    mgr._restore_display()
+    assert av.mode == "UNSET"  # left the alarm's screen untouched
+
+
+def test_restore_display_sets_avatar_when_no_alarm(monkeypatch):
+    from display import DisplayMode
+    mgr, av = _restore_mgr(monkeypatch, ringing=False)
+    mgr._restore_display()
+    assert av.mode == DisplayMode.AVATAR  # normal restore when nothing rings

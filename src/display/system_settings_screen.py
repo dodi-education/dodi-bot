@@ -42,8 +42,8 @@ DANGER = (210, 85, 63)            # #d2553f — destructive accent (Shut down) f
 SECTIONS = [
     ("general", "General", "volume"),
     ("internet", "Internet", "wifi"),
-    ("power", "Power", "power"),
     ("night", "Night", "moon"),
+    ("power", "Power", "power"),
 ]
 
 # Stepper presets + formatter (from the design).
@@ -414,7 +414,7 @@ class SystemSettingsScreen:
         widgets.text(screen, "SETTINGS", 16, 800, th["muted"], center=(CX, 88))
 
     def _draw_section_tabs(self, screen, th) -> None:
-        tw, tabh, gap, top = 116, 60, 8, 116
+        tw, tabh, gap, top = 116, 90, 8, 116
         total = len(SECTIONS) * tw + (len(SECTIONS) - 1) * gap
         x = CX - total // 2
         for sid, label, icon in SECTIONS:

@@ -621,7 +621,12 @@ class AvatarDisplay:
                         # double-tap window is still measured down-to-down.
                         g = self._h_gesture
                         if g is not None and not g["fired"] and not g["moved"] and not g["cancel"]:
-                            if current_mode == DisplayMode.AVATAR:
+                            if self._active_alarm is not None:
+                                # An alarm is ringing: a tap always dismisses it,
+                                # whatever the display mode (the mode can be AVATAR
+                                # if night mode just lifted out from under it).
+                                self._touch_event.set()
+                            elif current_mode == DisplayMode.AVATAR:
                                 kind, self._last_tap_ts = _classify_tap(
                                     self._last_tap_ts, g["down_ts"], DOUBLE_TAP_WINDOW
                                 )

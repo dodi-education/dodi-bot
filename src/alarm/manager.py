@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -218,13 +219,19 @@ class AlarmManager:
             self._state = AlarmState.IDLE
 
     def _wait_for_dismissal(self) -> None:
-        """Block until the alarm is dismissed by a screen tap."""
+        """Block until the alarm is dismissed by a screen tap, or auto-stop after
+        ``max_play_time`` seconds (0 = ring until dismissed)."""
         touch = self._avatar.touch_event if self._avatar is not None else None
         stop_touch = bool(self._alarm_cfg.get("stop_alarm_touch", True))
+        max_play = _coerce_float(self._alarm_cfg.get("max_play_time"), default=0.0)
+        start = time.monotonic()
         while not self._stop.is_set():
             if stop_touch and touch is not None and touch.is_set():
                 logger.info("Alarm dismissed by touch")
                 touch.clear()
+                return
+            if max_play > 0 and time.monotonic() - start >= max_play:
+                logger.info(f"Alarm auto-stopped after max_play_time ({max_play:.0f}s)")
                 return
             self._stop.wait(timeout=0.1)
 

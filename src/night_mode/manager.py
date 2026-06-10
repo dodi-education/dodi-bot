@@ -221,8 +221,28 @@ class NightModeManager:
         if self.is_active():
             self._apply_display()
 
+    def _alarm_ringing(self) -> bool:
+        """True if the standalone alarm engine is currently ringing.
+
+        Night mode must not steal the display from a ringing alarm — the alarm
+        owns the screen until it's dismissed. Symmetric to the alarm deferring to
+        night mode in AlarmManager._restore_display. Reached lazily via the shared
+        DODI instance because the alarm is constructed after this manager.
+        """
+        alarm = getattr(self._dodi, "_alarm", None) if self._dodi is not None else None
+        try:
+            return alarm is not None and alarm.is_ringing()
+        except Exception:
+            return False
+
     def _restore_display(self) -> None:
         from display import DisplayMode
+        # If an alarm is ringing as night mode lifts, leave the screen to it:
+        # clobbering to AVATAR here would hide the alarm screen and (via set_mode)
+        # drop the pending dismissal touch. The alarm restores the avatar itself
+        # when dismissed (night mode is OFF by then).
+        if self._alarm_ringing():
+            return
         set_power(True)
         set_brightness(100)
         if self._avatar is not None:
@@ -290,9 +310,13 @@ class NightModeManager:
         logger.info(f"Entering night mode (until {session.end_dt})")
         self._set_state(NightModeState.IDLE_SESSION)
         self._stop_main_mic()
-        self._apply_display()
-        if self._avatar is not None:
-            self._avatar.touch_event.clear()
+        # Don't apply the night display over a ringing alarm — it owns the screen
+        # until dismissed, after which its teardown calls reapply_display() to
+        # assert the night display.
+        if not self._alarm_ringing():
+            self._apply_display()
+            if self._avatar is not None:
+                self._avatar.touch_event.clear()
 
         wifi_off = self._disable_wifi_for_session()
         woke = False

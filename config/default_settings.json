@@ -120,6 +120,7 @@
       "duration": 20
     },
     "stop_alarm_touch": true,
+    "max_play_time": 300,
     "one_time_alarm": {
       "active": false,
       "time": "06:15",

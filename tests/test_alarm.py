@@ -271,3 +271,53 @@ def test_ring_volume_falls_back_to_global(monkeypatch):
         "one_time_alarm": {"active": False}, "schedule": {},
     }, dodi_volume=7)
     assert ao.volume == 7  # alarm.volume absent -> global audio volume
+
+
+# ----------------------------------------------------- max_play_time auto-stop
+
+def test_alarm_auto_stops_after_max_play_time(monkeypatch):
+    # With max_play_time set and no tap ever arriving, the ring ends on its own
+    # and tears down exactly like a tap dismissal would.
+    monkeypatch.setattr("alarm.manager.load_audio",
+                        lambda p: (np.zeros(100, dtype=np.int16), 44100))
+    settings = {"alarm": {
+        "stop_alarm_touch": True,
+        "max_play_time": 0.2,
+        "one_time_alarm": {"active": False}, "schedule": {},
+    }}
+    av = _FakeAvatar()
+    ao = _FakeAO()
+    mgr = AlarmManager(settings, av, _FakeDodi(ao), lambda s: None)
+
+    t0 = time.monotonic()
+    mgr._ring({"time": "06:00", "audio": "x.mp3", "once": False, "day": "Wed"})
+    elapsed = time.monotonic() - t0
+
+    assert elapsed >= 0.2            # waited out the cap (no tap was sent)
+    assert elapsed < 3.0             # but did auto-stop rather than ring forever
+    assert ao.stopped is True        # audio interrupted on teardown
+    assert mgr.is_ringing() is False  # back to idle
+    assert av.active_alarm is None   # clock unpinned
+
+
+def test_alarm_max_play_time_zero_rings_until_dismissed(monkeypatch):
+    # max_play_time == 0 means "ring forever"; only a tap stops it.
+    monkeypatch.setattr("alarm.manager.load_audio",
+                        lambda p: (np.zeros(100, dtype=np.int16), 44100))
+    settings = {"alarm": {
+        "stop_alarm_touch": True,
+        "max_play_time": 0,
+        "one_time_alarm": {"active": False}, "schedule": {},
+    }}
+    av = _FakeAvatar()
+    ao = _FakeAO()
+    mgr = AlarmManager(settings, av, _FakeDodi(ao), lambda s: None)
+
+    # Without this tap the ring would never return.
+    threading.Thread(target=lambda: (time.sleep(0.3), av.touch_event.set()),
+                     daemon=True).start()
+    t0 = time.monotonic()
+    mgr._ring({"time": "06:00", "audio": "x.mp3", "once": False, "day": "Wed"})
+
+    assert time.monotonic() - t0 >= 0.3  # rang until the tap, not auto-stopped
+    assert mgr.is_ringing() is False
