@@ -101,12 +101,10 @@ def blit(screen: pygame.Surface, name: str, cx: int, cy: int, size: int, color) 
     return rect
 
 
-# Occluder shapes for composites: a solid shape painted in the background color
-# erases whatever sits behind a front glyph so the layers read as one symbol.
-# A cloud knockout suits a front cloud; a circle knockout suits a front sun.
+# Occluder shape for composites: a solid cloud painted in the background color
+# erases whatever sits behind a front cloud so the layers read as one glyph.
 _OCCLUDER = "cloud-filled"
-_OCCLUDER_SCALE = 1.12   # slight oversize -> a clean knockout halo around the cloud
-_SUN_OCCLUDER_R = 0.42   # circle radius as a fraction of the sun's drawn size
+_OCCLUDER_SCALE = 1.12  # slight oversize -> a clean knockout halo around the cloud
 
 
 def composite(screen: pygame.Surface, spec, cx: int, cy: int, size: int,
@@ -118,10 +116,9 @@ def composite(screen: pygame.Surface, spec, cx: int, cy: int, size: int,
       * a ``list`` of layer dicts drawn back-to-front, each
         ``{"name", "scale", "dx", "dy", "occlude"?}`` where ``scale`` is a
         fraction of ``size`` and ``dx``/``dy`` are center offsets as fractions of
-        ``size``. ``occlude`` stamps a background-colored knockout before the layer
-        so the glyph(s) behind it are hidden where it sits: ``"cloud"`` (or the
-        legacy ``True``) uses a filled-cloud knockout for a front cloud; ``"circle"``
-        uses a filled disc for a front sun (sun-in-front, cloud-behind composites).
+        ``size``. A layer with ``"occlude": True`` first stamps a background-colored
+        filled cloud (the knockout) so the glyph(s) behind it are hidden where the
+        cloud sits — making e.g. a sun-behind-cloud read as a single symbol.
 
     ``color`` paints the visible glyphs; ``occluder_color`` is the tile background
     color (so the knockout matches the local background in any theme). Returns the
@@ -135,13 +132,9 @@ def composite(screen: pygame.Surface, spec, cx: int, cy: int, size: int,
         ls = max(1, int(round(size * layer.get("scale", 1.0))))
         lx = int(round(cx + layer.get("dx", 0.0) * size))
         ly = int(round(cy + layer.get("dy", 0.0) * size))
-        occ = layer.get("occlude")
-        if occ == "circle":
-            pygame.draw.circle(screen, occluder_color, (lx, ly),
-                               max(1, int(round(ls * _SUN_OCCLUDER_R))))
-        elif occ:  # True / "cloud": filled-cloud knockout
-            cloud = get(_OCCLUDER, max(1, int(round(ls * _OCCLUDER_SCALE))), occluder_color)
-            screen.blit(cloud, cloud.get_rect(center=(lx, ly)))
+        if layer.get("occlude"):
+            occ = get(_OCCLUDER, max(1, int(round(ls * _OCCLUDER_SCALE))), occluder_color)
+            screen.blit(occ, occ.get_rect(center=(lx, ly)))
         rect = blit(screen, layer["name"], lx, ly, ls, color)
         bounds = rect if bounds is None else bounds.union(rect)
     return bounds if bounds is not None else pygame.Rect(cx, cy, 0, 0)

@@ -45,22 +45,23 @@ HOT = (216, 90, 74)     # #D85A4A
 
 # Condition family -> icon spec for icons.composite(): a single Tabler name, or a
 # back-to-front list of layers {name, scale, dx, dy, occlude?} (dx/dy are fractions
-# of the icon size). The DOMINANT condition sits in front (large, with a knockout so
-# it reads cleanly); the secondary condition peeks from behind in the lower-left.
-# "few" = sun-dominant (mostly sunny): big sun in front, small cloud behind. "partly"
-# = cloud-dominant: cloud in front, sun peeking behind. "cloudy" = two clouds.
-# "showers" = sun-dominant (sunny with a few showers): big sun in front, rain behind.
+# of the icon size). The DOMINANT condition takes the main slot — large and centered,
+# drawn first (behind) — while the SECONDARY condition is small and sits in the
+# top-right corner, drawn last (in front) with a knockout so it stays fully visible
+# and reads cleanly over the primary. "partly" = cloud-dominant (cloud centered, sun
+# top-right); "few" and "showers" mirror it = sun-dominant (sun centered, cloud/rain
+# top-right); "cloudy" = two overlapping clouds.
 _COND_ICON = {
     "sun":     "sun",
-    "few":     [{"name": "cloud", "scale": 0.55, "dx": -0.22, "dy": 0.22},
-                {"name": "sun", "scale": 0.92, "dx": 0.08, "dy": -0.06, "occlude": "circle"}],
+    "few":     [{"name": "sun", "scale": 0.84, "dx": -0.04, "dy": 0.04},
+                {"name": "cloud", "scale": 0.50, "dx": 0.27, "dy": -0.25, "occlude": True}],
     "partly":  [{"name": "sun", "scale": 0.55, "dx": 0.24, "dy": -0.22},
                 {"name": "cloud", "scale": 1.00, "dx": -0.05, "dy": 0.05, "occlude": True}],
     "cloudy":  [{"name": "cloud", "scale": 0.78, "dx": -0.16, "dy": -0.14},
                 {"name": "cloud", "scale": 0.98, "dx": 0.14, "dy": 0.12, "occlude": True}],
     "rain":    "cloud-rain",
-    "showers": [{"name": "cloud-rain", "scale": 0.66, "dx": -0.24, "dy": 0.22},
-                {"name": "sun", "scale": 0.88, "dx": 0.12, "dy": -0.08, "occlude": "circle"}],
+    "showers": [{"name": "sun", "scale": 0.84, "dx": -0.04, "dy": 0.04},
+                {"name": "cloud-rain", "scale": 0.56, "dx": 0.26, "dy": -0.24, "occlude": True}],
     "snow":    "cloud-snow",
     "storm":   "cloud-bolt",
 }
