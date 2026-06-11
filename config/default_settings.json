@@ -3,6 +3,11 @@
     "code": "en",
     "auto_detect": false
   },
+  "theme": {
+    "mode": "auto",
+    "dark_mode_start": "22:00",
+    "dark_mode_end": "06:00"
+  },
   "conversation": {
     "timeout_seconds": 30.0
   },

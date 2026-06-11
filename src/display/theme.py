@@ -59,10 +59,55 @@ def font(size: int, weight: int = 800) -> pygame.font.Font:
     return f
 
 
-def auto_theme(now: _dt.datetime | None = None) -> str:
-    """Night theme between 18:00 and 08:00 (alarms are set in the evening)."""
-    h = (now or _dt.datetime.now()).hour
-    return "night" if (h >= 18 or h < 8) else "day"
+def _hhmm_to_minutes(hhmm, default_min: int) -> int:
+    """Parse "HH:MM" into minutes-since-midnight; fall back to default on bad input.
+
+    "24:00" maps to end-of-day (1440). Other fields are clamped into range so a
+    malformed value can never crash the render loop.
+    """
+    try:
+        hh, mm = str(hhmm).split(":")
+        h, m = int(hh), int(mm)
+    except Exception:
+        return default_min
+    if h == 24 and m == 0:
+        return 24 * 60
+    return (h % 24) * 60 + (m % 60)
+
+
+def resolve_theme(theme_cfg: dict | None = None, now: _dt.datetime | None = None) -> str:
+    """Resolve the active palette name ("day"/"night") from the theme settings.
+
+    `theme_cfg` is the "theme" settings block::
+
+        {"mode": "auto" | "light" | "dark",
+         "dark_mode_start": "HH:MM", "dark_mode_end": "HH:MM"}
+
+    - "light": always the day palette.
+    - "dark":  always the night palette.
+    - "auto" (default): night between ``dark_mode_start`` and ``dark_mode_end``.
+      The window wraps past midnight when start > end (e.g. "22:00"-"06:00");
+      an empty window (start == end) is never dark.
+    """
+    cfg = theme_cfg or {}
+    mode = str(cfg.get("mode", "auto")).strip().lower()
+    if mode == "light":
+        return "day"
+    if mode == "dark":
+        return "night"
+
+    # "auto" (and any unknown mode): time-bounded dark window.
+    start = _hhmm_to_minutes(cfg.get("dark_mode_start"), 18 * 60)
+    end = _hhmm_to_minutes(cfg.get("dark_mode_end"), 8 * 60)
+    if start == end:
+        return "day"  # empty window -> never dark
+    cur = now or _dt.datetime.now()
+    cur_min = cur.hour * 60 + cur.minute
+    if start < end:
+        is_night = start <= cur_min < end
+    else:  # window wraps past midnight
+        is_night = cur_min >= start or cur_min < end
+    return "night" if is_night else "day"
 
 
 def make_gradient_bg(w: int, h: int, c_top, c_bottom) -> pygame.Surface:

@@ -108,7 +108,7 @@ class SettingsScreen:
         self.selected = _today_abbr()
         self.overlay = None
         self._dragging = False
-        self.theme_name = theme.auto_theme()
+        self.theme_name = self._avatar.theme_name()
         self._bg = None  # rebuild gradient for the (possibly changed) theme
 
     # ----------------------------------------------------------- next-ring

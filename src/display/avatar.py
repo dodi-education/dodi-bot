@@ -272,6 +272,16 @@ class AvatarDisplay:
             return {}
         return self._settings.get("alarm", {}) or {}
 
+    def theme_name(self, now=None) -> str:
+        """Active palette ("day"/"night") from the live "theme" settings block.
+
+        Single source of truth for every screen's light/dark choice (mode +
+        dark_mode_start/end). Reads the live settings so a UI toggle takes effect
+        on the next repaint.
+        """
+        cfg = (self._settings or {}).get("theme") or {}
+        return theme.resolve_theme(cfg, now)
+
     def _open_settings_overlay(self) -> None:
         """Reset + open the alarm settings overlay (called from a swipe-down)."""
         if self._settings_screen is not None:

@@ -181,7 +181,7 @@ class SystemSettingsScreen:
         self._wifi_pw = ""
         self._loc_query = ""
         self._kb_shift = False
-        self.theme_name = theme.auto_theme()
+        self.theme_name = self._avatar.theme_name()
         self._bg = None  # rebuild gradient for the (possibly changed) theme
         # Cheap cached scan so the Internet row can show the connected SSID.
         self._wifi.start_scan(rescan=False)

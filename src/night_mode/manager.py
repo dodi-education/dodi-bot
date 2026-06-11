@@ -28,7 +28,7 @@ logger = logging.getLogger("DODI.night_mode")
 _TICK_SECONDS = 5.0
 # Re-enable Wi-Fi this many seconds before a night session ends, so a configured
 # weather service has time to fetch fresh data before night mode lifts.
-_WIFI_WAKE_LEAD = 60.0
+_WIFI_WAKE_LEAD = 180.0
 
 
 class NightModeState(Enum):

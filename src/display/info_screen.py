@@ -142,7 +142,7 @@ class InfoScreen:
 
     def open(self) -> None:
         """(Re)initialise when the info screen becomes visible (left swipe)."""
-        self.theme_name = theme.auto_theme()
+        self.theme_name = self._avatar.theme_name()
         self._bg = None
         self._last_kick = None
         loc = self._location()
@@ -162,7 +162,7 @@ class InfoScreen:
 
     def sig(self):
         """Adaptive-fps repaint key: changes whenever visible content changes."""
-        return ("info", theme.auto_theme(), _dt.datetime.now().strftime("%H:%M"),
+        return ("info", self._avatar.theme_name(), _dt.datetime.now().strftime("%H:%M"),
                 self.cpu_round(), self._weather_sig())
 
     # --------------------------------------------------------- event input
@@ -196,7 +196,7 @@ class InfoScreen:
     # ---------------------------------------------------------------- draw
 
     def draw(self, screen) -> None:
-        tn = theme.auto_theme()
+        tn = self._avatar.theme_name()
         if tn != self.theme_name:
             self.theme_name = tn
             self._bg = None
