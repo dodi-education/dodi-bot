@@ -122,6 +122,16 @@ class AlarmManager:
             key = (now.date(), f"{now.hour:02d}:{now.minute:02d}")
             if due is not None and key != self._last_fired:
                 self._last_fired = key
+                # Force a fresh forecast just before ringing so a morning briefing
+                # / post-alarm conversation has current weather. Background + best
+                # effort: never let it delay or break the alarm.
+                try:
+                    refresh = getattr(self._dodi, "refresh_weather_now", None)
+                    if callable(refresh):
+                        logger.info("Refreshing weather before alarm")
+                        refresh()
+                except Exception as e:
+                    logger.debug(f"pre-alarm weather refresh failed: {e}")
                 try:
                     self._ring(due)
                 except Exception as e:

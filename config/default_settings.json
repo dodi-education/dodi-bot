@@ -163,5 +163,9 @@
         "audio": "morning.mp3"
       }
     }
+  },
+  "debug": {
+    "log_file": null,
+    "max_log_size": "100M"
   }
 }

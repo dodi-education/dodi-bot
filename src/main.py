@@ -63,17 +63,24 @@ from network import weather as weather_mod
 from network import wifi as wifi_mod
 from network.weather import WeatherController
 from settings_store import load_settings, save_settings
+from log_config import LOG_FORMAT, setup_file_logging
 
 # Load environment variables
 PROJECT_DIR = Path(__file__).parent.parent
 load_dotenv(PROJECT_DIR / ".env")
 
-# Configure logging
+# Configure logging. The console handler is captured by systemd into the journal;
+# file logging (optional) is added in main() once settings are loaded.
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format=LOG_FORMAT,
 )
 logger = logging.getLogger("DODI")
+
+# How often the control loop kicks a background weather refresh. The forecast
+# changes slowly, so 15 minutes is plenty; the alarm forces an extra refresh just
+# before it rings (see AlarmManager).
+WEATHER_KICK_INTERVAL = 15 * 60.0
 
 
 class DODI:
@@ -118,7 +125,7 @@ class DODI:
         # AI system prompt so the user can ask about the weather. Shared with the
         # info screen (same cache) via avatar.bind_weather() in main().
         self._weather = WeatherController()
-        self._last_weather_kick = 0.0
+        self._last_weather_kick = None  # None -> fetch on the first loop tick
 
         # Display (wired up by main())
         self._avatar: Optional[AvatarDisplay] = None
@@ -211,7 +218,7 @@ class DODI:
         # radio_on() is fast and NetworkManager auto-reconnects saved profiles; we do
         # NOT block this (UI) thread on connect(). Nudge a weather refresh once back.
         wifi_mod.radio_on()
-        self._last_weather_kick = 0.0  # let the loop fetch a fresh forecast promptly
+        self._last_weather_kick = None  # let the loop fetch a fresh forecast promptly
 
     def load_persona(self) -> str:
         """Load the active persona text (used as the AI system prompt)."""
@@ -246,19 +253,30 @@ class DODI:
             return None
 
     def _maybe_refresh_weather(self) -> None:
-        """Kick a throttled background forecast fetch (the controller caches/refreshes).
+        """Kick a background forecast fetch on a 15-minute cadence.
 
-        Runs every control-loop tick but no-ops more than once a minute; the
-        controller itself only hits the network when its cache is stale, so this
-        keeps a fresh forecast ready for the system prompt without per-tick cost.
+        Runs every control-loop tick but no-ops until ``WEATHER_KICK_INTERVAL``
+        has elapsed since the last kick. Uses ``force=True`` so the cadence is a
+        clean 15 minutes regardless of the controller's own freshness cache (which
+        still guards the info screen's per-frame calls).
         """
         now = time.monotonic()
-        if now - self._last_weather_kick < 60.0:
+        if self._last_weather_kick is not None and \
+                now - self._last_weather_kick < WEATHER_KICK_INTERVAL:
             return
         self._last_weather_kick = now
         loc = self._weather_location()
         if loc is not None:
-            self._weather.start_fetch(loc[0], loc[1])
+            self._weather.start_fetch(loc[0], loc[1], force=True)
+
+    def refresh_weather_now(self) -> None:
+        """Force a fresh forecast fetch immediately (e.g. just before an alarm
+        rings) and re-align the regular cadence so the loop doesn't double-fetch."""
+        loc = self._weather_location()
+        if loc is None:
+            return
+        self._weather.start_fetch(loc[0], loc[1], force=True)
+        self._last_weather_kick = time.monotonic()
 
     def _weather_context(self) -> str:
         """Formatted forecast block for the system prompt (``""`` if unavailable)."""
@@ -644,6 +662,10 @@ def main() -> int:
         print("  [-] Could not load settings")
         return 1
     print("  [+] Settings loaded")
+
+    # Optional: also write logs to a file (debug.log_file). No-op when null.
+    if setup_file_logging(settings) is not None:
+        print(f"  [+] File logging -> {settings['debug']['log_file']}")
 
     # Create DODI instance
     print("[2/4] Initializing components...")

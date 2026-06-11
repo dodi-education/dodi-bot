@@ -28,6 +28,10 @@ logger = logging.getLogger("DODI.network")
 
 _ENDPOINT = "https://api.open-meteo.com/v1/forecast"
 
+# A descriptive UA is friendlier to the API/CDN than the default "Python-urllib"
+# (which some edges rate-limit or stall — a contributor to read timeouts).
+_USER_AGENT = "DODI-weather/1.0 (Raspberry Pi companion; open-meteo client)"
+
 
 @dataclass
 class DailyForecast:
@@ -176,8 +180,14 @@ def parse_forecast(payload: dict) -> list[DailyForecast]:
     return out
 
 
-def fetch_forecast(lat: float, lon: float, days: int = 3, timeout: float = 8.0) -> list[DailyForecast]:
-    """Fetch ``days`` of daily forecast for (lat, lon). Raises on network error."""
+def fetch_forecast(lat: float, lon: float, days: int = 3, timeout: float = 30.0) -> list[DailyForecast]:
+    """Fetch ``days`` of daily forecast for (lat, lon). Raises on network error.
+
+    The timeout is deliberately generous: the free api.open-meteo.com endpoint
+    can take 10s+ to respond (server-side, not network), and this runs on a
+    background thread every 15 minutes, so waiting is cheap and avoids spurious
+    "read operation timed out" failures.
+    """
     url = _ENDPOINT + "?" + urllib.parse.urlencode({
         "latitude": lat,
         "longitude": lon,
@@ -186,7 +196,8 @@ def fetch_forecast(lat: float, lon: float, days: int = 3, timeout: float = 8.0) 
         "timezone": "auto",
         "forecast_days": days,
     })
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
     return parse_forecast(payload)
 
@@ -195,22 +206,27 @@ class WeatherController:
     """Fetches the forecast on a worker thread; the UI polls :meth:`snapshot`.
 
     A successful result is cached per rounded (lat, lon) for :attr:`REFRESH`
-    seconds, so :meth:`start_fetch` (called when the info screen opens and once a
-    minute thereafter) is cheap and never fetches per-frame. The ``nmcli``-backed
-    connectivity check is throttled to :attr:`SSID_TTL`. ``state`` is one of
-    ``idle`` / ``fetching`` / ``done`` / ``offline``; ``revision`` bumps on every
-    state change so the render loop's repaint signature notices new results.
+    seconds, so :meth:`start_fetch` (called per-frame by the info screen) is cheap
+    and never fetches per-frame. The control loop drives the regular cadence with
+    ``force=True`` every 15 minutes; the alarm forces one just before it rings.
+    The ``nmcli``-backed connectivity check is throttled to :attr:`SSID_TTL`.
+    ``state`` is one of ``idle`` / ``fetching`` / ``done`` / ``offline``;
+    ``revision`` bumps on every state change so the render loop's repaint
+    signature notices new results.
     """
 
-    REFRESH = 15 * 60.0   # re-fetch a fresh location at most this often
-    SSID_TTL = 30.0       # cache the (expensive) connectivity check
+    REFRESH = 15 * 60.0     # re-fetch a fresh location at most this often
+    SSID_TTL = 30.0         # cache the (expensive) connectivity check
+    FETCH_ATTEMPTS = 2      # one retry on a transient failure (e.g. read timeout)
+    RETRY_BACKOFF = 2.0     # seconds to wait between attempts
 
     def __init__(self, clock=time.monotonic, fetch=fetch_forecast,
-                 online=wifi_mod.active_ssid):
+                 online=wifi_mod.active_ssid, sleep=time.sleep):
         self._lock = threading.Lock()
         self._clock = clock
         self._fetch = fetch
         self._online = online
+        self._sleep = sleep
         self._state = "idle"
         self._results: list[DailyForecast] = []
         self._revision = 0
@@ -230,17 +246,20 @@ class WeatherController:
             self._ssid_checked_at = now
         return self._ssid_cache is not None
 
-    def start_fetch(self, lat: float, lon: float) -> None:
+    def start_fetch(self, lat: float, lon: float, force: bool = False) -> None:
+        """Kick a background fetch. ``force`` bypasses the freshness cache so the
+        control loop's 15-min cadence and the pre-alarm refresh always re-fetch."""
         key = (round(float(lat), 4), round(float(lon), 4))
         now = self._clock()
         with self._lock:
             if self._state == "fetching":
                 return
-            fresh = (self._state == "done" and self._key == key
-                     and self._fetched_at is not None
-                     and now - self._fetched_at < self.REFRESH)
-            if fresh:
-                return
+            if not force:
+                fresh = (self._state == "done" and self._key == key
+                         and self._fetched_at is not None
+                         and now - self._fetched_at < self.REFRESH)
+                if fresh:
+                    return
             self._req += 1
             req = self._req
             self._state = "fetching"
@@ -251,10 +270,18 @@ class WeatherController:
         online = self._is_online()
         results = None
         if online:
-            try:
-                results = self._fetch(key[0], key[1])
-            except Exception as e:
-                logger.warning("weather fetch failed: %s", e)
+            for attempt in range(1, self.FETCH_ATTEMPTS + 1):
+                try:
+                    results = self._fetch(key[0], key[1])
+                    break
+                except Exception as e:
+                    if attempt < self.FETCH_ATTEMPTS:
+                        logger.info("weather fetch attempt %d/%d failed: %s; retrying",
+                                    attempt, self.FETCH_ATTEMPTS, e)
+                        self._sleep(self.RETRY_BACKOFF)
+                    else:
+                        logger.warning("weather fetch failed after %d attempts: %s",
+                                       self.FETCH_ATTEMPTS, e)
         with self._lock:
             if req != self._req:
                 return  # a newer fetch superseded this one
@@ -262,9 +289,11 @@ class WeatherController:
                 self._results = results
                 self._state = "done"
                 self._fetched_at = self._clock()
+                logger.info("weather updated: %d day(s) for %s", len(results), key)
             elif not online:
                 self._state = "offline"
                 self._fetched_at = None
+                logger.info("weather fetch skipped: offline")
             else:
                 # online but the request failed: keep any prior forecast, allow a retry
                 self._state = "done" if self._results else "offline"

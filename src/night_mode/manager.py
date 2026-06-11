@@ -89,6 +89,7 @@ class NightModeManager:
         # from the settings UI via apply_setting("night_mode.disable_wifi", ...).
         self._disable_wifi = bool(self._config.get("disable_wifi", False))
         self._saved_ssid: Optional[str] = None
+        self._wifi_radio_on = False  # did we re-power the radio this session?
 
         self._state = NightModeState.OFF
         self._state_changed = threading.Event()
@@ -279,31 +280,59 @@ class NightModeManager:
         try:
             self._saved_ssid = wifi_mod.active_ssid()
             wifi_mod.radio_off()
+            self._wifi_radio_on = False
             logger.info("Night mode: Wi-Fi disabled (was on %s)", self._saved_ssid)
             return True
         except Exception as e:
             logger.warning(f"Night mode: could not disable Wi-Fi: {e}")
             return False
 
-    def _wake_wifi_for_session(self) -> None:
-        """Re-enable Wi-Fi + reconnect the saved network, then nudge a weather refresh."""
+    def _wake_wifi_for_session(self) -> bool:
+        """Re-enable Wi-Fi and reconnect the saved network before the session ends.
+
+        Returns True once the link is up (or there is nothing to bring up), False
+        if the reconnect has not succeeded yet so the caller retries on a later
+        tick. A weak-signal room often needs several attempts; the old single
+        fire-and-forget connect (whose result was ignored) would leave Wi-Fi down
+        until morning. The radio is powered on once up front so NetworkManager's
+        own autoconnect keeps trying in the background even if our explicit
+        connect below keeps failing.
+        """
         if not self._internet_wifi_enabled():
-            return  # user globally disabled Wi-Fi while the session was running
-        try:
-            wifi_mod.radio_on()
-            if self._saved_ssid:
-                # Block (briefly) until associated so the forecast fetch below sees
-                # an online link; NM would also autoconnect, but this is deterministic.
-                wifi_mod.connect(self._saved_ssid, timeout=20.0)
-            # Zero the weather throttle so the main loop fetches on its next tick
-            # (it keeps ticking even while night mode preempts the conversation).
+            return True  # user globally disabled Wi-Fi; nothing to bring up
+
+        if not self._wifi_radio_on:
             try:
-                self._dodi._last_weather_kick = 0.0
-            except Exception:
-                pass
-            logger.info("Night mode: Wi-Fi re-enabled before session end")
-        except Exception as e:
-            logger.warning(f"Night mode: could not re-enable Wi-Fi: {e}")
+                self._wifi_radio_on = bool(wifi_mod.radio_on())
+            except Exception as e:
+                logger.warning("Night mode: could not power Wi-Fi radio on: %s", e)
+                self._wifi_radio_on = False
+            if not self._wifi_radio_on:
+                return False  # radio still off — retry next tick
+
+        connected = True  # nothing to target (no saved SSID) counts as done
+        if self._saved_ssid:
+            try:
+                connected = bool(wifi_mod.connect(self._saved_ssid, timeout=20.0).ok)
+            except Exception as e:
+                logger.warning("Night mode: Wi-Fi reconnect attempt errored: %s", e)
+                connected = False
+
+        if not connected:
+            logger.info("Night mode: Wi-Fi to %s not up yet; will retry",
+                        self._saved_ssid)
+            return False
+
+        # Link is up (or radio on with no saved SSID, left to NM autoconnect):
+        # zero the weather throttle so the main loop fetches a fresh forecast on
+        # its next tick (it keeps ticking even while night mode preempts the loop).
+        try:
+            self._dodi._last_weather_kick = 0.0
+        except Exception:
+            pass
+        logger.info("Night mode: Wi-Fi reconnected before session end (%s)",
+                    self._saved_ssid or "radio on; autoconnect")
+        return True
 
     def _enter_session(self, session: Block) -> None:
         """Hold inside a night-mode session until its end_dt, showing the display."""
@@ -326,12 +355,13 @@ class NightModeManager:
                 now = self._time_provider()
                 if now >= session.end_dt:
                     break
-                # Re-enable Wi-Fi shortly before the session ends so a configured
-                # weather service can fetch fresh data before night mode lifts.
+                # From the wake-lead point until the session ends, keep trying to
+                # bring Wi-Fi back (a weak-signal room may need several attempts)
+                # so a fresh forecast is ready and the device is online when night
+                # mode lifts. `woke` only latches once the link is actually up.
                 if (wifi_off and not woke
                         and (session.end_dt - now).total_seconds() <= _WIFI_WAKE_LEAD):
-                    self._wake_wifi_for_session()
-                    woke = True
+                    woke = self._wake_wifi_for_session()
                 # Poll so NTP jumps and stop() are picked up quickly.
                 self._stop.wait(timeout=_TICK_SECONDS)
         finally:

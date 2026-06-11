@@ -45,21 +45,22 @@ HOT = (216, 90, 74)     # #D85A4A
 
 # Condition family -> icon spec for icons.composite(): a single Tabler name, or a
 # back-to-front list of layers {name, scale, dx, dy, occlude?} (dx/dy are fractions
-# of the icon size). The sun always sits behind, peeking from the upper-right; the
-# cloud(s) overlap in front with a knockout occluder so each composite reads as one
-# glyph. "few" = sun-dominant (mostly sunny); "partly" = cloud-dominant; "cloudy" =
-# two overlapping clouds; "showers" = sun + rain cloud.
+# of the icon size). The DOMINANT condition sits in front (large, with a knockout so
+# it reads cleanly); the secondary condition peeks from behind in the lower-left.
+# "few" = sun-dominant (mostly sunny): big sun in front, small cloud behind. "partly"
+# = cloud-dominant: cloud in front, sun peeking behind. "cloudy" = two clouds.
+# "showers" = sun-dominant (sunny with a few showers): big sun in front, rain behind.
 _COND_ICON = {
     "sun":     "sun",
-    "few":     [{"name": "sun", "scale": 0.92, "dx": 0.10, "dy": -0.08},
-                {"name": "cloud", "scale": 0.55, "dx": -0.20, "dy": 0.20, "occlude": True}],
+    "few":     [{"name": "cloud", "scale": 0.55, "dx": -0.22, "dy": 0.22},
+                {"name": "sun", "scale": 0.92, "dx": 0.08, "dy": -0.06, "occlude": "circle"}],
     "partly":  [{"name": "sun", "scale": 0.55, "dx": 0.24, "dy": -0.22},
                 {"name": "cloud", "scale": 1.00, "dx": -0.05, "dy": 0.05, "occlude": True}],
     "cloudy":  [{"name": "cloud", "scale": 0.78, "dx": -0.16, "dy": -0.14},
                 {"name": "cloud", "scale": 0.98, "dx": 0.14, "dy": 0.12, "occlude": True}],
     "rain":    "cloud-rain",
-    "showers": [{"name": "sun", "scale": 0.52, "dx": 0.24, "dy": -0.24},
-                {"name": "cloud-rain", "scale": 1.00, "dx": -0.05, "dy": 0.05, "occlude": True}],
+    "showers": [{"name": "cloud-rain", "scale": 0.66, "dx": -0.24, "dy": 0.22},
+                {"name": "sun", "scale": 0.88, "dx": 0.12, "dy": -0.08, "occlude": "circle"}],
     "snow":    "cloud-snow",
     "storm":   "cloud-bolt",
 }
