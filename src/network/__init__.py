@@ -1,1 +1,1 @@
-"""Network helpers: Wi-Fi (nmcli) and geocoding (Open-Meteo)."""
+"""Network helpers: connectivity, Wi-Fi (nmcli), geocoding and weather (Open-Meteo)."""

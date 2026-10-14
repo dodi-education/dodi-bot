@@ -259,15 +259,22 @@ class InfoScreen:
             self._weather.start_fetch(*loc)
             self._last_kick = now
         snap = self._weather.snapshot()
-        if snap["results"]:
-            self._draw_forecast(screen, th, tile, snap["results"])
+        today = _dt.date.today()
+        # Only a forecast that still covers today is shown; a stale cache (fetches
+        # failing for days) falls through to the offline hint / status text.
+        days = weather_mod.current_days(snap["results"], today)
+        if days and days[0].date == today.isoformat():
+            self._draw_forecast(screen, th, tile, days, today)
         elif snap["state"] == "offline":
             self._draw_hint(screen, th, tile, "Connect to internet for weather service.",
                             "wifi", ("internet", None))
-        else:
+        elif snap["state"] in ("idle", "fetching"):
             widgets.text(screen, "Loading…", 18, 700, th["muted"], center=tile.center)
+        else:
+            widgets.text(screen, "Weather currently unavailable", 18, 700, th["muted"],
+                         center=tile.center)
 
-    def _draw_forecast(self, screen, th, tile, results) -> None:
+    def _draw_forecast(self, screen, th, tile, results, today) -> None:
         n = min(3, len(results))
         cw = tile.width / 3.0
         for i in range(n):
@@ -276,8 +283,9 @@ class InfoScreen:
                 sx = int(tile.x + cw * i)
                 pygame.draw.line(screen, th["ring"], (sx, tile.y + 26), (sx, tile.bottom - 26), 2)
             d = results[i]
-            day = "Today" if i == 0 else self._dow(d.date)
-            widgets.text(screen, day, 17, 800, theme.ACCENT if i == 0 else th["ink"],
+            is_today = d.date == today.isoformat()
+            day = "Today" if is_today else self._dow(d.date)
+            widgets.text(screen, day, 17, 800, theme.ACCENT if is_today else th["ink"],
                          center=(cx, tile.y + 32))
             icons.composite(screen, _COND_ICON.get(d.type, "cloud"),
                             int(cx), int(tile.y + 90), 56, theme.ACCENT, th["surface"])

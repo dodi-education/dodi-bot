@@ -6,9 +6,10 @@ The info screen reads ``settings["weather"]`` (lat/lon, written by the Location
 sheet) and renders the result; WMO weather codes are mapped to the icon families
 the design ships (sun / partly / cloudy / rain, plus snow).
 
-Connectivity is checked via :func:`network.wifi.active_ssid` on the worker thread
-(throttled), so a missing internet connection yields a distinct ``"offline"``
-state — the info screen turns that into the "Connect to internet…" hint.
+Connectivity is checked via :func:`network.connectivity.has_default_route` on the
+worker thread (throttled) — any interface counts, Ethernet as well as Wi-Fi — so a
+missing internet connection yields a distinct ``"offline"`` state; the info screen
+turns that into the "Connect to internet…" hint.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
-from network import wifi as wifi_mod
+from network import connectivity
 
 logger = logging.getLogger("DODI.network")
 
@@ -130,21 +131,33 @@ def _relative_day(date_iso: str, today: _dt.date) -> str:
     return _WEEKDAY[d.weekday()]
 
 
-def forecast_context(location_name: str, forecasts, today: _dt.date) -> str:
-    """A short weather block for the AI system prompt (``""`` if no usable data).
+def current_days(forecasts, today: _dt.date) -> list[DailyForecast]:
+    """``forecasts`` without past days (date < ``today``).
 
-    Days are labelled today/tomorrow/weekday so the model can answer questions
-    like "Wie wird das Wetter heute/morgen?". Past days (date < today) are skipped
-    so a cache that crossed midnight can't mislabel yesterday as "today".
-    Temperatures are °C.
+    A cached forecast outlives its dates when fetches stop succeeding (offline for
+    days) or the cache crosses midnight; consumers use this so they never present
+    yesterday's forecast as today's.
     """
-    rows = []
+    out = []
     for d in forecasts or []:
         try:
             if _dt.date.fromisoformat(d.date) < today:
                 continue
         except (ValueError, TypeError):
             pass
+        out.append(d)
+    return out
+
+
+def forecast_context(location_name: str, forecasts, today: _dt.date) -> str:
+    """A short weather block for the AI system prompt (``""`` if no usable data).
+
+    Days are labelled today/tomorrow/weekday so the model can answer questions
+    like "Wie wird das Wetter heute/morgen?". Past days are skipped (see
+    :func:`current_days`). Temperatures are °C.
+    """
+    rows = []
+    for d in current_days(forecasts, today):
         label = _TYPE_LABEL.get(d.type, d.type)
         rows.append(f"- {_relative_day(d.date, today)} ({d.date}): {label}, "
                     f"high {round(d.hi)}°C, low {round(d.lo)}°C")
@@ -209,19 +222,19 @@ class WeatherController:
     seconds, so :meth:`start_fetch` (called per-frame by the info screen) is cheap
     and never fetches per-frame. The control loop drives the regular cadence with
     ``force=True`` every 15 minutes; the alarm forces one just before it rings.
-    The ``nmcli``-backed connectivity check is throttled to :attr:`SSID_TTL`.
+    The connectivity check is throttled to :attr:`ONLINE_TTL`.
     ``state`` is one of ``idle`` / ``fetching`` / ``done`` / ``offline``;
     ``revision`` bumps on every state change so the render loop's repaint
     signature notices new results.
     """
 
     REFRESH = 15 * 60.0     # re-fetch a fresh location at most this often
-    SSID_TTL = 30.0         # cache the (expensive) connectivity check
+    ONLINE_TTL = 30.0       # cache the connectivity check
     FETCH_ATTEMPTS = 2      # one retry on a transient failure (e.g. read timeout)
     RETRY_BACKOFF = 2.0     # seconds to wait between attempts
 
     def __init__(self, clock=time.monotonic, fetch=fetch_forecast,
-                 online=wifi_mod.active_ssid, sleep=time.sleep):
+                 online=connectivity.has_default_route, sleep=time.sleep):
         self._lock = threading.Lock()
         self._clock = clock
         self._fetch = fetch
@@ -233,18 +246,18 @@ class WeatherController:
         self._key: tuple | None = None
         self._fetched_at: float | None = None
         self._req = 0
-        self._ssid_cache = None
-        self._ssid_checked_at: float | None = None
+        self._online_cache = False
+        self._online_checked_at: float | None = None
 
     def _is_online(self) -> bool:
         now = self._clock()
-        if self._ssid_checked_at is None or now - self._ssid_checked_at >= self.SSID_TTL:
+        if self._online_checked_at is None or now - self._online_checked_at >= self.ONLINE_TTL:
             try:
-                self._ssid_cache = self._online()
+                self._online_cache = bool(self._online())
             except Exception:
-                self._ssid_cache = None
-            self._ssid_checked_at = now
-        return self._ssid_cache is not None
+                self._online_cache = False
+            self._online_checked_at = now
+        return self._online_cache
 
     def start_fetch(self, lat: float, lon: float, force: bool = False) -> None:
         """Kick a background fetch. ``force`` bypasses the freshness cache so the
