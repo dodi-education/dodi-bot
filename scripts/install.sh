@@ -394,6 +394,23 @@ if ! grep -qF "$LED_MARKER" "$CONFIG_FILE" 2>/dev/null; then
 else
     echo -e "  [+] Onboard LEDs already disabled in config.txt"
 fi
+# Same for the two LEDs on the Ethernet jack (green/amber, lit whenever a cable
+# is plugged in). Separate marker so existing installs pick this up on re-run.
+# Pi 4 eth_led mode 4 = off.
+ETH_LED_MARKER="# DODI: disable Ethernet jack LEDs"
+if ! grep -qF "$ETH_LED_MARKER" "$CONFIG_FILE" 2>/dev/null; then
+    echo -e "  [~] Disabling Ethernet jack LEDs in config.txt..."
+    {
+        echo ""
+        echo "$ETH_LED_MARKER"
+        echo "dtparam=eth_led0=4"
+        echo "dtparam=eth_led1=4"
+    } >> "$CONFIG_FILE"
+    echo -e "  [+] Ethernet LEDs will be off after reboot"
+    NEED_REBOOT=true
+else
+    echo -e "  [+] Ethernet LEDs already disabled in config.txt"
+fi
 echo ""
 
 # ============================================
